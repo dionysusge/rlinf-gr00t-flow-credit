@@ -1,0 +1,101 @@
+__pycache__
+.vscode
+*.log
+*.idx
+*.npy
+*.txt
+!requirements/**
+!docs/*
+*.DS_Store
+*.out
+build
+docs/build
+dist
+logs/*
+outputs/*
+*.so
+.venv
+.docs-venv
+uv.lock
+rlinf/envs/maniskill/assets
+PKG-INFO
+*.egg-info/
+.claude/settings.json
+
+# ============================================================
+# GR00T Flow Credit local/runtime files
+# ============================================================
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Root-level local environments
+/.venv/
+/venv/
+/env/
+/envs/
+/conda-env/
+
+# Root-level runtime caches and outputs
+/.cache/
+/wandb/
+/ray/
+/tmp/
+/temp/
+/logs/
+/results/
+/outputs/
+/runs/
+/checkpoints/
+/models/
+
+# Experiment-generated outputs
+/experiments/flow_credit/logs/
+/experiments/flow_credit/results/
+/experiments/flow_credit/outputs/
+/experiments/flow_credit/evaluations/
+/experiments/flow_credit/videos/
+
+# Model/checkpoint artifacts
+*.safetensors
+*.ckpt
+*.pth
+*.pt
+
+# Media and archives
+*.mp4
+*.avi
+*.mov
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Automatic server backups
+*.before_*
+*.backup
+*.bak
+
+# Local editor settings
+/.vscode/
+/.idea/
+.DS_Store
+
+# Upstream AI-assistant metadata
+
+# Upstream GitHub project automation
+/.github/
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+*.local.yaml
+*.local.yml
+*.local.env
+site_paths.env
