@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 import random
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -992,6 +993,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         del kwargs
         observations, obs_copy, is_batch = self._prepare_rollout_observation(env_obs)
         normalized_action, result = self._predict_normalized_action(obs_copy, mode)
+        self._maybe_dump_flow_diagnostic(env_obs, result)
         unnormalized_action = self._get_unnormalized_action(
             normalized_action,
             state=observations,
@@ -1066,7 +1068,14 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             getattr(self, "padding_value", 0),
         )
 
-        if mode == "eval":
+        if mode == "eval" and os.environ.get("FLOW_DIAG_DIR"):
+            # Diagnostic path: use the RL action head in deterministic eval mode.
+            # This exposes the complete denoising chain while injecting no SDE noise.
+            normalized_action, result = self._get_rl_action(
+                normalized_input,
+                mode="eval",
+            )
+        elif mode == "eval":
             normalized_action = self._get_action_from_normalized_input(normalized_input)
             result = {
                 "prev_logprobs": None,
@@ -1079,6 +1088,205 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
                 mode=mode,
             )
         return normalized_action, result
+
+    def _maybe_dump_flow_diagnostic(
+        self,
+        env_obs: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        """Dump deterministic flow geometry for offline diagnosis.
+
+        Enabled only when FLOW_DIAG_DIR is set.
+
+        Raw tensors are intentionally written outside the Git repository.
+        The diagnostic focuses on geometry only; none of these metrics should
+        be interpreted as task-level correctness without reward evidence.
+        """
+        diag_dir = os.environ.get("FLOW_DIAG_DIR")
+        if not diag_dir:
+            return
+
+        forward_inputs = result.get("forward_inputs", {})
+        chains = forward_inputs.get("chains")
+        if chains is None:
+            return
+
+        call_idx = int(getattr(self, "_flow_diag_call_idx", 0))
+        self._flow_diag_call_idx = call_idx + 1
+
+        max_calls = int(os.environ.get("FLOW_DIAG_MAX_CALLS", "1000000"))
+        if call_idx >= max_calls:
+            return
+
+        root = Path(diag_dir)
+        root.mkdir(parents=True, exist_ok=True)
+
+        chains = chains.detach().float().cpu()
+
+        # [B, K+1, H, D]
+        if chains.ndim != 4:
+            raise ValueError(
+                f"Expected chains [B,K+1,H,D], got {tuple(chains.shape)}"
+            )
+
+        batch_size, num_states, _, _ = chains.shape
+        num_steps = num_states - 1
+
+        if num_steps <= 0:
+            return
+
+        # Only dimensions that actually correspond to the LIBERO action.
+        action_dim = int(self.action_dim)
+        valid = chains[..., :action_dim]
+
+        delta_t = 1.0 / float(num_steps)
+
+        # Deterministic Euler relation:
+        # x_{k+1} = x_k + dt * v_k
+        velocities = (
+            valid[:, 1:] - valid[:, :-1]
+        ) / delta_t
+
+        tau = torch.arange(
+            num_steps,
+            dtype=valid.dtype,
+        ) / float(num_steps)
+
+        final_action = valid[:, -1]
+
+        endpoint_pred = (
+            valid[:, :-1]
+            + velocities
+            * (1.0 - tau)[None, :, None, None]
+        )
+
+        def flat_norm(x):
+            return torch.linalg.vector_norm(
+                x.reshape(*x.shape[:2], -1),
+                dim=-1,
+            )
+
+        endpoint_error = flat_norm(
+            endpoint_pred - final_action[:, None]
+        )
+
+        endpoint_distance = flat_norm(
+            final_action[:, None] - valid[:, :-1]
+        )
+
+        step_delta = valid[:, 1:] - valid[:, :-1]
+        step_norm = flat_norm(step_delta)
+
+        v_flat = velocities.reshape(batch_size, num_steps, -1)
+        endpoint_dir = (
+            final_action[:, None] - valid[:, :-1]
+        ).reshape(batch_size, num_steps, -1)
+
+        alignment = (
+            (v_flat * endpoint_dir).sum(dim=-1)
+            /
+            (
+                torch.linalg.vector_norm(v_flat, dim=-1)
+                * torch.linalg.vector_norm(endpoint_dir, dim=-1)
+                + 1e-8
+            )
+        )
+
+        if num_steps >= 2:
+            turning_cos = (
+                (v_flat[:, :-1] * v_flat[:, 1:]).sum(dim=-1)
+                /
+                (
+                    torch.linalg.vector_norm(
+                        v_flat[:, :-1], dim=-1
+                    )
+                    * torch.linalg.vector_norm(
+                        v_flat[:, 1:], dim=-1
+                    )
+                    + 1e-8
+                )
+            )
+        else:
+            turning_cos = torch.empty(
+                (batch_size, 0),
+                dtype=valid.dtype,
+            )
+
+        chord = torch.linalg.vector_norm(
+            (final_action - valid[:, 0]).reshape(batch_size, -1),
+            dim=-1,
+        )
+
+        path_length = step_norm.sum(dim=-1)
+
+        path_ratio = path_length / (chord + 1e-8)
+
+        def to_numpy(value):
+            if value is None:
+                return None
+            if torch.is_tensor(value):
+                return value.detach().cpu().numpy()
+            if isinstance(value, np.ndarray):
+                return value
+            try:
+                return np.asarray(value)
+            except Exception:
+                return None
+
+        payload = {
+            "chains_full": chains.numpy(),
+            "chains_valid": valid.numpy(),
+            "velocities": velocities.numpy(),
+            "tau": tau.numpy(),
+            "endpoint_pred": endpoint_pred.numpy(),
+            "endpoint_error": endpoint_error.numpy(),
+            "endpoint_distance": endpoint_distance.numpy(),
+            "alignment": alignment.numpy(),
+            "turning_cos": turning_cos.numpy(),
+            "step_norm": step_norm.numpy(),
+            "path_length": path_length.numpy(),
+            "chord_length": chord.numpy(),
+            "path_ratio": path_ratio.numpy(),
+            "call_idx": np.asarray(call_idx, dtype=np.int64),
+            "num_steps": np.asarray(num_steps, dtype=np.int64),
+            "action_dim": np.asarray(action_dim, dtype=np.int64),
+            "model_label": np.asarray(
+                os.environ.get("FLOW_DIAG_LABEL", "unknown")
+            ),
+            "reset_offset": np.asarray(
+                int(os.environ.get("FLOW_DIAG_RESET_OFFSET", "-1")),
+                dtype=np.int64,
+            ),
+        }
+
+        for key in (
+            "states",
+            "main_images",
+            "wrist_images",
+            "extra_view_images",
+        ):
+            value = to_numpy(env_obs.get(key))
+            if value is not None:
+                payload[key] = value
+
+        task_desc = env_obs.get("task_descriptions")
+        if task_desc is not None:
+            if isinstance(task_desc, (list, tuple)):
+                payload["task_descriptions"] = np.asarray(
+                    [str(x) for x in task_desc],
+                    dtype=np.str_,
+                )
+            else:
+                payload["task_descriptions"] = np.asarray(
+                    [str(task_desc)],
+                    dtype=np.str_,
+                )
+
+        out_path = root / (
+            f"flow_{call_idx:06d}_pid{os.getpid()}.npz"
+        )
+
+        np.savez_compressed(out_path, **payload)
 
     def _apply_exploration_noise(
         self,
