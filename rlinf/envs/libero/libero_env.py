@@ -464,6 +464,50 @@ class LiberoEnv(gym.Env):
                 reset_state_ids = build_interleaved_eval_reset_state_ids(
                     self.trial_id_bins, self.cumsum_trial_id_bins
                 )
+            # Select a deterministic, non-overlapping slice of the
+            # interleaved evaluation reset-state pool.
+            eval_reset_offset = int(
+                self.cfg.get("eval_reset_offset", 0)
+            )
+            eval_reset_limit = int(
+                self.cfg.get("eval_reset_limit", 0)
+            )
+
+            if eval_reset_offset < 0:
+                raise ValueError(
+                    "eval_reset_offset must be non-negative, "
+                    f"got {eval_reset_offset}"
+                )
+
+            if eval_reset_offset >= len(reset_state_ids):
+                raise ValueError(
+                    f"eval_reset_offset={eval_reset_offset} is outside "
+                    f"the reset-state pool of size {len(reset_state_ids)}"
+                )
+
+            if eval_reset_limit > 0:
+                reset_state_ids = reset_state_ids[
+                    eval_reset_offset:
+                    eval_reset_offset + eval_reset_limit
+                ]
+            else:
+                reset_state_ids = reset_state_ids[
+                    eval_reset_offset:
+                ]
+
+            required_reset_states = (
+                self.num_group * self.total_num_processes
+            )
+
+            if len(reset_state_ids) < required_reset_states:
+                raise ValueError(
+                    "Not enough evaluation reset states after slicing: "
+                    f"offset={eval_reset_offset}, "
+                    f"limit={eval_reset_limit}, "
+                    f"available={len(reset_state_ids)}, "
+                    f"required={required_reset_states}"
+                )
+
             return distribute_reset_state_ids_round_robin(
                 reset_state_ids, self.total_num_processes
             )
