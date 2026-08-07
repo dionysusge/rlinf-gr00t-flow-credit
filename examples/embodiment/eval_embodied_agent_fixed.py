@@ -116,7 +116,7 @@ def main(cfg) -> None:
         payload = {
             "label": label,
             "resume_dir": cfg.runner.resume_dir,
-            "expected_trajectories": 100,
+            "expected_trajectories": int(cfg.env.eval.total_num_envs),
             "metrics": metrics,
         }
 
@@ -136,10 +136,11 @@ def main(cfg) -> None:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
 
         actual = int(metrics.get("num_trajectories", -1))
+        expected = int(cfg.env.eval.total_num_envs)
 
-        if actual != 100:
+        if actual != expected:
             raise RuntimeError(
-                f"Expected 100 trajectories, got {actual}"
+                f"Expected {expected} trajectories, got {actual}"
             )
 
         print()
