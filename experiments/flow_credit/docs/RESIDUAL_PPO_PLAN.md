@@ -56,8 +56,9 @@ tmux new -s residual-e1
 bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu01.sh
 ```
 
-One update contains 4096 environment transitions. Checkpoints are saved near
-50K, 100K, 150K and 200K transitions (steps 12, 24, 36 and 48). W&B/TensorBoard
+One update contains 4096 environment transitions. The 150-step run saves and
+evaluates checkpoints near 123K, 246K, 369K, 492K and 614K transitions (steps
+30, 60, 90, 120 and 150). W&B/TensorBoard
 logs include cumulative transitions, completed episodes, residual L2/quantiles,
 active fractions, each action dimension, each of 16 chunk horizons, and the
 residual/base norm ratio.

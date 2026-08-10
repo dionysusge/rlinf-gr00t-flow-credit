@@ -35,7 +35,7 @@ STAMP=$(date +%Y%m%d_%H%M%S)
 SWEEP_ROOT="$BULK/evaluations/n17_residual_setA_checkpoint_sweep_${STAMP}"
 mkdir -p "$SWEEP_ROOT" "$RAY_TMPDIR"
 echo "$SWEEP_ROOT" > "$BULK/logs/n17_residual_setA_sweep.latest"
-declare -a STEPS=(12 24 36 48)
+declare -a STEPS=(30 60 90 120 150)
 
 cd "$RLINF"
 for step in "${STEPS[@]}"; do

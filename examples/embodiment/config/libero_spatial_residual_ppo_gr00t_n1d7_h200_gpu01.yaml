@@ -32,12 +32,13 @@ runner:
     - tensorboard
     wandb_entity: liwuyu-cloudbutterfly
   max_epochs: 2000
-  # 16 envs * 256 transitions = 4096 transitions/update. Steps 12, 24, 36,
-  # and 48 correspond to 49,152; 98,304; 147,456; and 196,608 transitions.
-  max_steps: 48
+  # 16 envs * 256 transitions = 4096 transitions/update. Steps 30, 60, 90,
+  # 120, and 150 correspond to 122,880; 245,760; 368,640; 491,520; and
+  # 614,400 transitions.
+  max_steps: 150
   only_eval: false
-  val_check_interval: 12
-  save_interval: 12
+  val_check_interval: 30
+  save_interval: 30
   resume_dir: null
   ckpt_path: null
   weight_sync_interval: 1
