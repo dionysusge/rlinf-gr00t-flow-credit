@@ -235,6 +235,9 @@ def artifact_files(kind: str, root: Path) -> list[Path]:
         "git_status.txt",
         "e0_evaluation_root.txt",
         "e0_repeatability.json",
+        "E0_UNVERIFIED_AT_LAUNCH.txt",
+        "e0_pass_confirmed_after_launch.txt",
+        "e0_validation_at_training_end.json",
     ):
         path = root / filename
         if path.is_file():

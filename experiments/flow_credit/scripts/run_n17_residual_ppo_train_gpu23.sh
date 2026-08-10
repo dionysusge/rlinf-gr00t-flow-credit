@@ -175,10 +175,49 @@ python "$EMBODIED_PATH/train_embodied_agent.py" \
     runner.logger.experiment_name="$RUN_NAME" \
     2>&1 | tee "$RUN_DIR/training.log"
 
+E0_STATUS_AT_TRAINING_END=pending
+if [[ -f "$E0_ROOT/E0_PASS" ]]; then
+    E0_STATUS_AT_TRAINING_END=passed
+    cp "$E0_ROOT/E0_PASS" "$RUN_DIR/e0_pass_confirmed_after_launch.txt"
+    if [[ -f "$E0_ROOT/E0_REPEATABILITY.json" ]]; then
+        cp "$E0_ROOT/E0_REPEATABILITY.json" "$RUN_DIR/e0_repeatability.json"
+    fi
+elif [[ -f "$E0_ROOT/E0_FAIL" ]]; then
+    E0_STATUS_AT_TRAINING_END=failed
+fi
+export E0_STATUS_AT_TRAINING_END
+python - "$RUN_DIR/e0_validation_at_training_end.json" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(
+    json.dumps(
+        {
+            "e0_root": os.environ.get("E0_ROOT"),
+            "status": os.environ["E0_STATUS_AT_TRAINING_END"],
+            "verified_at_launch": os.environ.get("E0_VERIFIED_AT_LAUNCH") == "1",
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
+
 python experiments/flow_credit/analysis/log_evidence_to_wandb.py \
     --kind training \
     --root "$RUN_DIR" \
     --name "$RUN_NAME" \
     --run-id "$RUN_ID"
+
+if [[ "$E0_STATUS_AT_TRAINING_END" == "failed" ]]; then
+    echo "E1 INVALID: the concurrently running seeded E0 failed." >&2
+    exit 3
+fi
+if [[ "$E0_STATUS_AT_TRAINING_END" == "pending" ]]; then
+    echo "E1 remains PROVISIONAL: seeded E0 has not finished." >&2
+fi
 
 echo "N17_RESIDUAL_PPO_E1_COMPLETE"
