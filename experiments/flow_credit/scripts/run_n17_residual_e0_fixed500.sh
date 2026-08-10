@@ -21,7 +21,10 @@ export TRANSFORMERS_OFFLINE=1
 export HF_HUB_DISABLE_TELEMETRY=1
 export NO_ALBUMENTATIONS_UPDATE=1
 export TOKENIZERS_PARALLELISM=false
-export WANDB_MODE=disabled
+export WANDB_MODE=online
+export WANDB_ENTITY=liwuyu-cloudbutterfly
+export WANDB_PROJECT=GR00T-Residual-RL
+export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export RAY_TMPDIR="$BULK/tmp/ray-residual-e0"
@@ -32,9 +35,12 @@ unset RESIDUAL_DIAG_DIR 2>/dev/null || true
 
 mkdir -p "$RAY_TMPDIR" "$BULK/evaluations" "$BULK/logs"
 STAMP=$(date +%Y%m%d_%H%M%S)
+WANDB_EVIDENCE_RUN_ID="n17-residual-e0-$STAMP"
 EVAL_ROOT="$BULK/evaluations/n17_residual_e0_zero_fixed500_${STAMP}"
 mkdir -p "$EVAL_ROOT"
 echo "$EVAL_ROOT" > "$BULK/logs/n17_residual_e0.latest"
+git -C "$RLINF" rev-parse HEAD > "$EVAL_ROOT/git_commit.txt"
+git -C "$RLINF" status --short > "$EVAL_ROOT/git_status.txt"
 
 declare -a SET_NAMES=(setA setB setC setD setE)
 declare -a OFFSETS=(0 10 20 30 40)
@@ -156,5 +162,11 @@ print(json.dumps(payload, indent=2))
 if not repeatable:
     print("WARNING: E0 passed 444/500 but Set-A outcomes were not exactly repeatable")
 PY
+
+python experiments/flow_credit/analysis/log_evidence_to_wandb.py \
+    --kind e0 \
+    --root "$EVAL_ROOT" \
+    --name "Residual-E0-Zero-Fixed500-$STAMP" \
+    --run-id "$WANDB_EVIDENCE_RUN_ID"
 
 echo "N17_RESIDUAL_E0_FIXED500_COMPLETE"

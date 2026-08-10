@@ -18,7 +18,10 @@ export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export WANDB_MODE=disabled
+export WANDB_MODE=online
+export WANDB_ENTITY=liwuyu-cloudbutterfly
+export WANDB_PROJECT=GR00T-Residual-RL
+export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export RAY_TMPDIR="$BULK/tmp/ray-residual-strength"
@@ -29,9 +32,14 @@ unset MUJOCO_EGL_DEVICE_ID 2>/dev/null || true
 E0_ROOT=$(cat "$BULK/logs/n17_residual_e0.latest")
 test -f "$E0_ROOT/aggregate/trials.csv"
 STAMP=$(date +%Y%m%d_%H%M%S)
+WANDB_EVIDENCE_RUN_ID="n17-residual-strength-$STAMP"
 ROOT="$BULK/evaluations/n17_residual_strength_fixed500_${STAMP}"
 mkdir -p "$ROOT" "$RAY_TMPDIR"
 echo "$ROOT" > "$BULK/logs/n17_residual_strength.latest"
+printf '%s\n' "$CHECKPOINT" > "$ROOT/checkpoint.txt"
+printf '%s\n' "$E0_ROOT" > "$ROOT/e0_evaluation_root.txt"
+git -C "$RLINF" rev-parse HEAD > "$ROOT/git_commit.txt"
+git -C "$RLINF" status --short > "$ROOT/git_status.txt"
 
 declare -a LAMBDAS=(0 0.25 0.5 1.0)
 declare -a SET_NAMES=(setA setB setC setD setE)
@@ -139,5 +147,11 @@ with (root / "strength_curve.csv").open("w", newline="") as handle:
     writer.writerows(rows)
 print(json.dumps(rows, indent=2))
 PY
+
+python experiments/flow_credit/analysis/log_evidence_to_wandb.py \
+    --kind strength_curve \
+    --root "$ROOT" \
+    --name "Residual-Strength-Curve-Fixed500-$STAMP" \
+    --run-id "$WANDB_EVIDENCE_RUN_ID"
 
 echo "N17_RESIDUAL_STRENGTH_FIXED500_COMPLETE"

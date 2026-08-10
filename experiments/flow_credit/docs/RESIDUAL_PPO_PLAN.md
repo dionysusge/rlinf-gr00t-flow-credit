@@ -93,6 +93,8 @@ checkpoint/evaluation names.
 
 Each run additionally writes `run_manifest.json` (host, GPU, versions, seeds,
 paths, branch/commit and command) and a fully expanded `resolved_config.yaml`.
+The training run uses a stable W&B run ID and appends both files as a compact
+evidence artifact after training completes.
 
 ## Set-A checkpoint sweep
 
@@ -126,6 +128,13 @@ above 10% or a maximum absolute mean correction above 0.095. These are the
 cases to inspect before considering a 0.2 bound. Per-dimension and per-horizon
 pressure distinguish a global radius limitation from rotation/gripper-specific
 or short-horizon correction structure.
+
+E0, checkpoint sweep, strength curve and Full-PPO paired evaluation each create
+one run in the `GR00T-Residual-RL` W&B project under the
+`Residual-Locality-Evidence` group. Success, rescue/harm, selection, saturation
+and raw-pressure values are logged as metrics. Trial, high-pressure and
+transition-conditioned CSVs are logged as Tables and all compact structured
+files are retained as an artifact. Raw NPZ shards are intentionally local-only.
 
 ## E2: residual strength curve
 

@@ -18,7 +18,10 @@ export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export WANDB_MODE=disabled
+export WANDB_MODE=online
+export WANDB_ENTITY=liwuyu-cloudbutterfly
+export WANDB_PROJECT=GR00T-Residual-RL
+export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export RAY_TMPDIR="$BULK/tmp/ray-fullppo-step600-fixed500"
@@ -32,10 +35,14 @@ test -f "$E0_ROOT/aggregate/trials.csv"
 test -f "$E0_ROOT/aggregate_heldout_BtoE/trials.csv"
 
 STAMP=$(date +%Y%m%d_%H%M%S)
+WANDB_EVIDENCE_RUN_ID="n17-fullppo-step600-paired-$STAMP"
 ROOT="$BULK/evaluations/n17_fullppo_step600_fixed500_${STAMP}"
 mkdir -p "$ROOT" "$RAY_TMPDIR"
 echo "$ROOT" > "$BULK/logs/n17_fullppo_step600_fixed500.latest"
 printf '%s\n' "$CHECKPOINT" > "$ROOT/checkpoint.txt"
+printf '%s\n' "$E0_ROOT" > "$ROOT/e0_evaluation_root.txt"
+git -C "$RLINF" rev-parse HEAD > "$ROOT/git_commit.txt"
+git -C "$RLINF" status --short > "$ROOT/git_status.txt"
 
 declare -a SET_NAMES=(setA setB setC setD setE)
 declare -a OFFSETS=(0 10 20 30 40)
@@ -77,5 +84,11 @@ python experiments/flow_credit/analysis/analyze_residual_pairing.py \
     --base "$E0_ROOT/aggregate_heldout_BtoE/trials.csv" \
     --candidate "$ROOT/aggregate_heldout_BtoE/trials.csv" \
     --output-dir "$ROOT/heldout_BtoE_pairing"
+
+python experiments/flow_credit/analysis/log_evidence_to_wandb.py \
+    --kind fullppo \
+    --root "$ROOT" \
+    --name "FullPPO-Step600-Paired-Fixed500-$STAMP" \
+    --run-id "$WANDB_EVIDENCE_RUN_ID"
 
 echo "N17_FULLPPO_STEP600_FIXED500_COMPLETE"

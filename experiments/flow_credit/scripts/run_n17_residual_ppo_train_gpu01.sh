@@ -46,6 +46,8 @@ RUN_ID="n17_residual_ppo_a01_gpu01_${STAMP}"
 RUN_NAME="Residual-PPO-0.1-GR00T-N1.7-LIBERO-Spatial-H200x2-${STAMP}"
 RUN_DIR="$BULK/runs/$RUN_ID"
 export RUN_ID RUN_NAME RUN_DIR E0_ROOT
+export WANDB_RUN_ID="$RUN_ID"
+export WANDB_NAME="$RUN_NAME"
 mkdir -p "$RUN_DIR"
 echo "$RUN_DIR" > "$BULK/logs/n17_residual_ppo.latest"
 
@@ -150,5 +152,11 @@ python "$EMBODIED_PATH/train_embodied_agent.py" \
     runner.logger.log_path="$RUN_DIR" \
     runner.logger.experiment_name="$RUN_NAME" \
     2>&1 | tee "$RUN_DIR/training.log"
+
+python experiments/flow_credit/analysis/log_evidence_to_wandb.py \
+    --kind training \
+    --root "$RUN_DIR" \
+    --name "$RUN_NAME" \
+    --run-id "$RUN_ID"
 
 echo "N17_RESIDUAL_PPO_E1_COMPLETE"

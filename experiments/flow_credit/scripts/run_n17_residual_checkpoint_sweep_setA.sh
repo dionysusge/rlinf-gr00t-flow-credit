@@ -17,7 +17,10 @@ export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-export WANDB_MODE=disabled
+export WANDB_MODE=online
+export WANDB_ENTITY=liwuyu-cloudbutterfly
+export WANDB_PROJECT=GR00T-Residual-RL
+export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
 export RAY_TMPDIR="$BULK/tmp/ray-residual-sweep"
@@ -32,9 +35,15 @@ test -d "$CKPT_ROOT"
 test -f "$E0_ROOT/setA/trials.csv"
 
 STAMP=$(date +%Y%m%d_%H%M%S)
+WANDB_EVIDENCE_RUN_ID="n17-residual-checkpoint-sweep-$STAMP"
 SWEEP_ROOT="$BULK/evaluations/n17_residual_setA_checkpoint_sweep_${STAMP}"
 mkdir -p "$SWEEP_ROOT" "$RAY_TMPDIR"
 echo "$SWEEP_ROOT" > "$BULK/logs/n17_residual_setA_sweep.latest"
+printf '%s\n' "$RUN_DIR" > "$SWEEP_ROOT/training_run_dir.txt"
+printf '%s\n' "$CKPT_ROOT" > "$SWEEP_ROOT/checkpoint_root.txt"
+printf '%s\n' "$E0_ROOT" > "$SWEEP_ROOT/e0_evaluation_root.txt"
+git -C "$RLINF" rev-parse HEAD > "$SWEEP_ROOT/git_commit.txt"
+git -C "$RLINF" status --short > "$SWEEP_ROOT/git_status.txt"
 declare -a STEPS=(30 60 90 120 150)
 
 cd "$RLINF"
@@ -131,5 +140,11 @@ selection = {
 (root / "best_checkpoint.txt").write_text(str(best_checkpoint) + "\n")
 print(json.dumps({"rows": rows, "selection": selection}, indent=2))
 PY
+
+python experiments/flow_credit/analysis/log_evidence_to_wandb.py \
+    --kind checkpoint_sweep \
+    --root "$SWEEP_ROOT" \
+    --name "Residual-Checkpoint-Sweep-SetA-$STAMP" \
+    --run-id "$WANDB_EVIDENCE_RUN_ID"
 
 echo "N17_RESIDUAL_CHECKPOINT_SWEEP_SETA_COMPLETE"

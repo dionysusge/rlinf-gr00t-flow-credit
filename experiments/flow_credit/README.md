@@ -27,3 +27,7 @@ pipeline records paired rescue/harm outcomes, per-dimension and per-horizon
 corrections, sample/mean saturation, raw constraint pressure and trial-level
 high-pressure cases. It also records Set-A repeatability, a pre-registered Set-A
 selection rule, B--E held-out results and a paired Full-PPO step600 reference.
+Training curves and every evaluation stage are synchronized to the
+`GR00T-Residual-RL` W&B project. Compact CSV/JSON/YAML evidence is uploaded as
+an artifact and the key trial files are exposed as W&B Tables; raw diagnostic
+NPZ shards, videos and logs remain on the server.
