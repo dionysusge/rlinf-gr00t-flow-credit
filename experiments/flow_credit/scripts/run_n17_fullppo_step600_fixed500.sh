@@ -5,7 +5,7 @@ CHECKPOINT=${1:?Usage: $0 /absolute/path/to/full_ppo/global_step_600}
 PROJECT=/data/Wayne/gzw/rlinf_gr00t_n17
 BULK=/mnt/models/gzw/rlinf_gr00t_n17
 RLINF="$PROJECT/RLinf"
-CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu01
+CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu45
 ENTRY="$RLINF/examples/embodiment/eval_embodied_agent_fixed.py"
 test -d "$CHECKPOINT/actor"
 
@@ -24,6 +24,7 @@ export WANDB_PROJECT=GR00T-Residual-RL
 export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
+export RLINF_FORCE_LOCAL_RAY=1
 # Keep this path short: Ray embeds a long session name below it and Linux
 # AF_UNIX socket paths are limited to 107 bytes.
 export RAY_TMPDIR=/mnt/models/gzw/raytmp/fullppo

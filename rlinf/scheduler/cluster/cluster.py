@@ -312,32 +312,44 @@ class Cluster:
             Cluster._prepare_ray_code_sync_runtime_env_fragment()
         )
 
-        try:
-            # First try to connect to an existing Ray cluster
-            ray_init_kwargs: dict[str, Any] = {
-                "address": "auto",
-                "logging_level": Cluster.LOGGING_LEVEL,
-                "namespace": Cluster.NAMESPACE,
-            }
-            if self._ray_code_sync_fragment is not None:
-                ray_init_kwargs["runtime_env"] = dict(self._ray_code_sync_fragment)
-                py_mods = ray_init_kwargs["runtime_env"].get("py_modules") or ()
-                self._logger.info(
-                    "%s Ray code sync is enabled (py_modules=%r); workers receive "
-                    "only the rlinf package from the launch node. Disable with %s=0.",
-                    Cluster.SYS_NAME,
-                    tuple(py_mods),
-                    Cluster.get_full_env_var_name(ClusterEnvVar.CODE_WORKING_DIR),
-                )
-            ray.init(**ray_init_kwargs)
-        except ConnectionError:
-            ray_init_kwargs = {
-                "logging_level": Cluster.LOGGING_LEVEL,
-                "namespace": Cluster.NAMESPACE,
-            }
-            if self._ray_code_sync_fragment is not None:
-                ray_init_kwargs["runtime_env"] = dict(self._ray_code_sync_fragment)
-            ray.init(**ray_init_kwargs)
+        local_ray_init_kwargs: dict[str, Any] = {
+            "logging_level": Cluster.LOGGING_LEVEL,
+            "namespace": Cluster.NAMESPACE,
+        }
+        if self._ray_code_sync_fragment is not None:
+            local_ray_init_kwargs["runtime_env"] = dict(
+                self._ray_code_sync_fragment
+            )
+            py_mods = local_ray_init_kwargs["runtime_env"].get("py_modules") or ()
+            self._logger.info(
+                "%s Ray code sync is enabled (py_modules=%r); workers receive "
+                "only the rlinf package from the launch node. Disable with %s=0.",
+                Cluster.SYS_NAME,
+                tuple(py_mods),
+                Cluster.get_full_env_var_name(ClusterEnvVar.CODE_WORKING_DIR),
+            )
+
+        force_local_ray = os.environ.get("RLINF_FORCE_LOCAL_RAY", "0").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if force_local_ray:
+            # Concurrent experiments owned by the same Unix user must not
+            # discover and attach to one another through address="auto".
+            self._logger.info(
+                "RLINF_FORCE_LOCAL_RAY is enabled; starting an isolated local "
+                "Ray runtime"
+            )
+            local_ray_init_kwargs["include_dashboard"] = False
+            ray.init(**local_ray_init_kwargs)
+        else:
+            try:
+                # First try to connect to an existing Ray cluster.
+                ray.init(address="auto", **local_ray_init_kwargs)
+            except ConnectionError:
+                ray.init(**local_ray_init_kwargs)
 
         # Ray log collector
         if distributed_log_dir is not None:

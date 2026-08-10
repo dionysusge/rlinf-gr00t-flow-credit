@@ -26,7 +26,8 @@ The first round answers only:
 - Historical unseeded base reference: GR00T N1.7 LIBERO-Spatial SFT
   (444/500, 88.8%); the seeded E0 run establishes the new paired base.
 - Full PPO reference: global step 600 (458/500, 91.6%).
-- Hardware: physical H200 GPUs 0 and 1.
+- Hardware lanes: seeded evaluation jobs use physical H200 GPUs 4 and 5;
+  Residual PPO training uses physical H200 GPUs 2 and 3.
 - Action horizon: 16; flow steps: 4.
 - Residual: normalized-action bound 0.1, two-layer 512-width MLP,
   `log_std=-2.5`, zero-initialized mean head. Its input is pooled VLM features,
@@ -51,10 +52,13 @@ git pull --ff-only
 source /data/Wayne/gzw/rlinf_gr00t_n17/scripts/activate_rlinf.sh
 ```
 
-Run long jobs inside `tmux`. Check GPU 0/1 occupancy before launching.
+Run long jobs inside `tmux`. Check GPU 2/3 and GPU 4/5 occupancy before
+launching.
 Every script validates its short `RAY_TMPDIR` before loading the model. The
 fixed-evaluation entry shuts down its own local Ray runtime; the scripts do not
-use the account-wide `ray stop --force` command.
+use the account-wide `ray stop --force` command. The experiment scripts also
+set `RLINF_FORCE_LOCAL_RAY=1`, preventing concurrent jobs owned by the same
+Unix user from discovering and attaching to each other's Ray cluster.
 
 ## E0: seeded zero-residual equivalence check
 
@@ -77,11 +81,16 @@ repeat them. The historical unseeded 444/500 result remains in
 `historical_reference.json`; it is a reference, not an exact gate for the new
 seeded inference stream. Do not launch E1 if E0 fails.
 
+E0 runs on GPUs 4 and 5. E1 may be launched concurrently on GPUs 2 and 3 with
+the explicit provisional override below. If E0 eventually fails, discard the
+concurrent E1 run rather than using it as validated evidence.
+
 ## E1: Residual-PPO-0.1
 
 ```bash
 tmux new -s residual-e1
-bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu01.sh
+ALLOW_UNVERIFIED_E0=1 \
+  bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu23.sh
 ```
 
 One update contains 4096 environment transitions. The 150-step run saves and
