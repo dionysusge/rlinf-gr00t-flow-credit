@@ -14,7 +14,7 @@ round answers only:
 
 - Base: GR00T N1.7 LIBERO-Spatial SFT (444/500, 88.8%).
 - Full PPO reference: global step 600 (458/500, 91.6%).
-- Hardware: physical H200 GPUs 2 and 3.
+- Hardware: physical H200 GPUs 0 and 1.
 - Action horizon: 16; flow steps: 4.
 - Residual: normalized-action bound 0.1, two-layer 512-width MLP,
   `log_std=-2.5`, zero-initialized mean head.
@@ -36,7 +36,7 @@ git pull --ff-only
 source /data/Wayne/gzw/rlinf_gr00t_n17/scripts/activate_rlinf.sh
 ```
 
-Run long jobs inside `tmux`. Check GPU 2/3 occupancy before launching.
+Run long jobs inside `tmux`. Check GPU 0/1 occupancy before launching.
 
 ## E0: exact zero-residual check
 
@@ -53,7 +53,7 @@ trials complete and success is exactly 444/500. Do not launch E1 if E0 fails.
 
 ```bash
 tmux new -s residual-e1
-bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu23.sh
+bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu01.sh
 ```
 
 One update contains 4096 environment transitions. Checkpoints are saved near

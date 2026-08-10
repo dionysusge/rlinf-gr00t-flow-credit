@@ -6,7 +6,7 @@ ulimit -n 65535 2>/dev/null || true
 PROJECT=/data/Wayne/gzw/rlinf_gr00t_n17
 BULK=/mnt/models/gzw/rlinf_gr00t_n17
 RLINF="$PROJECT/RLinf"
-CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu23
+CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu01
 ENTRY="$RLINF/examples/embodiment/eval_embodied_agent_fixed.py"
 
 source "$PROJECT/scripts/activate_rlinf.sh"

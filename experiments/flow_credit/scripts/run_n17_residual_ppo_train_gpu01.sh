@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT=/data/Wayne/gzw/rlinf_gr00t_n17
 BULK=/mnt/models/gzw/rlinf_gr00t_n17
 RLINF="$PROJECT/RLinf"
-CONFIG_NAME=libero_spatial_residual_ppo_gr00t_n1d7_h200_gpu23
+CONFIG_NAME=libero_spatial_residual_ppo_gr00t_n1d7_h200_gpu01
 
 source "$PROJECT/scripts/activate_rlinf.sh"
 export EMBODIED_PATH="$RLINF/examples/embodiment"
@@ -42,7 +42,7 @@ fi
 
 mkdir -p "$RAY_TMPDIR" "$BULK/runs" "$BULK/logs" "$BULK/wandb"
 STAMP=$(date +%Y%m%d_%H%M%S)
-RUN_ID="n17_residual_ppo_a01_gpu23_${STAMP}"
+RUN_ID="n17_residual_ppo_a01_gpu01_${STAMP}"
 RUN_NAME="Residual-PPO-0.1-GR00T-N1.7-LIBERO-Spatial-H200x2-${STAMP}"
 RUN_DIR="$BULK/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"
@@ -56,7 +56,7 @@ printf '%s\n' "$E0_ROOT" > "$RUN_DIR/e0_evaluation_root.txt"
 echo "============================================================"
 echo "Residual PPO E1"
 echo "run:                 $RUN_NAME"
-echo "GPUs:                2,3"
+echo "GPUs:                0,1"
 echo "base GR00T:          frozen"
 echo "residual bound:      0.1"
 echo "actor/critic LR:     1e-4 / 1e-4"
