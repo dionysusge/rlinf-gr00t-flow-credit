@@ -32,6 +32,21 @@ from rlinf.models import get_model
 from rlinf.models.embodiment.base_policy import BasePolicy
 from rlinf.scheduler import Channel, Cluster, Worker, split_channel_message
 from rlinf.utils.placement import HybridComponentPlacement
+from rlinf.utils.utils import seed_everything
+
+
+def seed_rollout_worker(cfg: DictConfig, rank: int) -> int | None:
+    """Seed model-side rollout RNGs when ``rollout.seed`` is configured.
+
+    Environment seeds control reset states, but flow-policy inference also
+    samples an initial Gaussian latent with ``torch.randn``.  Give each rollout
+    rank a distinct, reproducible stream so repeated evaluations consume the
+    same model-side randomness without correlating ranks.
+    """
+    configured_seed = cfg.rollout.get("seed", None)
+    if configured_seed is None:
+        return None
+    return seed_everything(int(configured_seed) + int(rank))
 
 
 class MultiStepRolloutWorker(Worker):
@@ -172,6 +187,15 @@ class MultiStepRolloutWorker(Worker):
         self.setup_sample_params()
         if self.enable_offload:
             self.offload_model()
+
+        # Seed after construction/loading/capture so optional modules cannot
+        # shift the first inference latent by consuming initialization RNG.
+        self.rollout_seed = seed_rollout_worker(self.cfg, self._rank)
+        if self.rollout_seed is not None:
+            self.log_info(
+                f"Seeded rollout model RNGs with seed={self.rollout_seed} "
+                f"(rank={self._rank})"
+            )
 
     def setup_sample_params(self):
         # sampling parameters for rollout

@@ -117,6 +117,8 @@ env:
 rollout:
   group_name: RolloutGroup
   backend: huggingface
+  # Separate from env seeds: this makes model-side flow/residual sampling reproducible.
+  seed: 1234
   enable_offload: false
   pipeline_stage_num: 1
   model:

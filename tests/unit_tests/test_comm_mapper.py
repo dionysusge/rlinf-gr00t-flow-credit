@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import torch
+from omegaconf import OmegaConf
 
 from rlinf.data.embodied_io_struct import EnvOutput, RolloutResult
 from rlinf.scheduler import (
@@ -22,7 +23,27 @@ from rlinf.scheduler import (
     merge_batches,
     split_batch,
 )
-from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker
+from rlinf.workers.rollout.hf.huggingface_worker import (
+    MultiStepRolloutWorker,
+    seed_rollout_worker,
+)
+
+
+def test_seed_rollout_worker_uses_rank_specific_reproducible_stream() -> None:
+    cfg = OmegaConf.create({"rollout": {"seed": 1234}})
+
+    assert seed_rollout_worker(cfg, rank=1) == 1235
+    first = torch.randn(8)
+    assert seed_rollout_worker(cfg, rank=1) == 1235
+    second = torch.randn(8)
+
+    torch.testing.assert_close(first, second, rtol=0, atol=0)
+
+
+def test_seed_rollout_worker_is_opt_in() -> None:
+    cfg = OmegaConf.create({"rollout": {}})
+
+    assert seed_rollout_worker(cfg, rank=0) is None
 
 
 def _make_obs(start: int, batch_size: int) -> dict:

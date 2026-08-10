@@ -85,7 +85,18 @@ def collect_events(kind: str, root: Path) -> tuple[list[dict[str, object]], str 
         for prefix, relative in (
             ("e0/all500", "aggregate/summary.json"),
             ("e0/heldout_BtoE", "aggregate_heldout_BtoE/summary.json"),
+            ("e0/base_all500", "base/aggregate/summary.json"),
+            (
+                "e0/base_heldout_BtoE",
+                "base/aggregate_heldout_BtoE/summary.json",
+            ),
+            ("e0/base_zero_pairing", "base_zero_pairing/summary.json"),
+            (
+                "e0/base_zero_pairing_heldout_BtoE",
+                "base_zero_pairing_heldout_BtoE/summary.json",
+            ),
             ("e0/repeatability", "E0_REPEATABILITY.json"),
+            ("e0/historical_reference", "historical_reference.json"),
         ):
             path = root / relative
             if path.is_file():
@@ -153,6 +164,10 @@ def table_paths(kind: str, root: Path) -> list[tuple[str, Path]]:
         "training": (),
         "e0": (
             "aggregate/trials.csv",
+            "base/aggregate/trials.csv",
+            "base_zero_pairing/pairing.csv",
+            "base_zero_pairing/per_task.csv",
+            "base_zero_pairing_heldout_BtoE/pairing.csv",
             "setA_repeatability/pairing.csv",
         ),
         "checkpoint_sweep": (
@@ -247,6 +262,9 @@ def provenance_config(kind: str, root: Path) -> dict[str, object]:
         path = root / filename
         if path.is_file():
             config[key] = path.read_text(encoding="utf-8").strip()
+    e0_manifest = root / "e0_manifest.json"
+    if kind == "e0" and e0_manifest.is_file():
+        config["e0_experiment"] = read_json(e0_manifest)
     return config
 
 

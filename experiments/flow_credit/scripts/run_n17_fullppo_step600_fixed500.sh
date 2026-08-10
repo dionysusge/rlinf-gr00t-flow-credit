@@ -24,10 +24,13 @@ export WANDB_PROJECT=GR00T-Residual-RL
 export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
-export RAY_TMPDIR="$BULK/tmp/ray-fullppo-step600-fixed500"
+# Keep this path short: Ray embeds a long session name below it and Linux
+# AF_UNIX socket paths are limited to 107 bytes.
+export RAY_TMPDIR=/mnt/models/gzw/raytmp/fullppo
 export PYTHONPATH="$RLINF:${PYTHONPATH:-}"
 unset CUDA_VISIBLE_DEVICES 2>/dev/null || true
 unset MUJOCO_EGL_DEVICE_ID 2>/dev/null || true
+unset RAY_ADDRESS 2>/dev/null || true
 unset RESIDUAL_DIAG_DIR 2>/dev/null || true
 
 E0_ROOT=$(cat "$BULK/logs/n17_residual_e0.latest")
@@ -38,6 +41,7 @@ STAMP=$(date +%Y%m%d_%H%M%S)
 WANDB_EVIDENCE_RUN_ID="n17-fullppo-step600-paired-$STAMP"
 ROOT="$BULK/evaluations/n17_fullppo_step600_fixed500_${STAMP}"
 mkdir -p "$ROOT" "$RAY_TMPDIR"
+python "$RLINF/experiments/flow_credit/analysis/validate_ray_tmpdir.py" "$RAY_TMPDIR"
 echo "$ROOT" > "$BULK/logs/n17_fullppo_step600_fixed500.latest"
 printf '%s\n' "$CHECKPOINT" > "$ROOT/checkpoint.txt"
 printf '%s\n' "$E0_ROOT" > "$ROOT/e0_evaluation_root.txt"
@@ -65,7 +69,6 @@ for index in "${!SET_NAMES[@]}"; do
         runner.logger.log_path="$output_dir" \
         runner.logger.experiment_name="fullppo-step600-$set_name" \
         2>&1 | tee "$output_dir/evaluation.log"
-    ray stop --force >/dev/null 2>&1 || true
     inputs+=(--input "$set_name=$output_dir")
     if [[ "$set_name" != "setA" ]]; then
         heldout_inputs+=(--input "$set_name=$output_dir")

@@ -24,10 +24,13 @@ export WANDB_PROJECT=GR00T-Residual-RL
 export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
-export RAY_TMPDIR="$BULK/tmp/ray-residual-strength"
+# Keep this path short: Ray embeds a long session name below it and Linux
+# AF_UNIX socket paths are limited to 107 bytes.
+export RAY_TMPDIR=/mnt/models/gzw/raytmp/strength
 export PYTHONPATH="$RLINF:${PYTHONPATH:-}"
 unset CUDA_VISIBLE_DEVICES 2>/dev/null || true
 unset MUJOCO_EGL_DEVICE_ID 2>/dev/null || true
+unset RAY_ADDRESS 2>/dev/null || true
 
 E0_ROOT=$(cat "$BULK/logs/n17_residual_e0.latest")
 test -f "$E0_ROOT/aggregate/trials.csv"
@@ -35,6 +38,7 @@ STAMP=$(date +%Y%m%d_%H%M%S)
 WANDB_EVIDENCE_RUN_ID="n17-residual-strength-$STAMP"
 ROOT="$BULK/evaluations/n17_residual_strength_fixed500_${STAMP}"
 mkdir -p "$ROOT" "$RAY_TMPDIR"
+python "$RLINF/experiments/flow_credit/analysis/validate_ray_tmpdir.py" "$RAY_TMPDIR"
 echo "$ROOT" > "$BULK/logs/n17_residual_strength.latest"
 printf '%s\n' "$CHECKPOINT" > "$ROOT/checkpoint.txt"
 printf '%s\n' "$E0_ROOT" > "$ROOT/e0_evaluation_root.txt"
@@ -73,7 +77,6 @@ for lambda in "${LAMBDAS[@]}"; do
             runner.logger.log_path="$output_dir" \
             runner.logger.experiment_name="residual-lambda$lambda-$set_name" \
             2>&1 | tee "$output_dir/evaluation.log"
-        ray stop --force >/dev/null 2>&1 || true
         inputs+=(--input "$set_name=$output_dir")
         if [[ "$set_name" != "setA" ]]; then
             heldout_inputs+=(--input "$set_name=$output_dir")
@@ -141,6 +144,20 @@ for directory in root.glob("lambda_*"):
         "heldout_mcnemar_exact_pvalue": heldout_pairing["mcnemar_exact_pvalue"],
     })
 rows.sort(key=lambda row: row["lambda"])
+zero_row = next(row for row in rows if row["lambda"] == 0.0)
+if zero_row["rescue"] or zero_row["harm"]:
+    (root / "LAMBDA0_FAIL").write_text(
+        "lambda=0 did not reproduce the seeded E0 base: "
+        f"rescue={zero_row['rescue']}, harm={zero_row['harm']}\n",
+        encoding="utf-8",
+    )
+    raise SystemExit(
+        "Strength-curve implementation check failed at lambda=0: "
+        f"rescue={zero_row['rescue']}, harm={zero_row['harm']}"
+    )
+(root / "LAMBDA0_PASS").write_text(
+    "lambda=0 exactly reproduced all seeded E0 outcomes\n", encoding="utf-8"
+)
 with (root / "strength_curve.csv").open("w", newline="") as handle:
     writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
     writer.writeheader()

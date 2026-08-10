@@ -1803,7 +1803,12 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
     def _get_action_from_normalized_input(
         self, normalized_input: dict[str, Any]
     ) -> torch.Tensor:
-        """Deterministic action prediction (eval path) without RL bookkeeping."""
+        """Base action prediction (eval path) without RL bookkeeping.
+
+        ``get_action`` still samples the flow policy's initial Gaussian latent;
+        ``do_sample=False`` only disables token sampling. Reproducibility is
+        therefore controlled by the rollout worker's model-side RNG seed.
+        """
         device_type = getattr(self.device, "type", "cpu")
         autocast_context = (
             torch.autocast(device_type=device_type, dtype=self.compute_dtype)

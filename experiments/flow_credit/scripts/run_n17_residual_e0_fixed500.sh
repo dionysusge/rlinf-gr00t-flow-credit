@@ -27,64 +27,144 @@ export WANDB_PROJECT=GR00T-Residual-RL
 export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
-export RAY_TMPDIR="$BULK/tmp/ray-residual-e0"
+# Keep this path short: Ray embeds a long session name below it and Linux
+# AF_UNIX socket paths are limited to 107 bytes.
+export RAY_TMPDIR=/mnt/models/gzw/raytmp/e0
 export PYTHONPATH="$RLINF:${PYTHONPATH:-}"
 unset CUDA_VISIBLE_DEVICES 2>/dev/null || true
 unset MUJOCO_EGL_DEVICE_ID 2>/dev/null || true
+unset RAY_ADDRESS 2>/dev/null || true
 unset RESIDUAL_DIAG_DIR 2>/dev/null || true
 
 mkdir -p "$RAY_TMPDIR" "$BULK/evaluations" "$BULK/logs"
+python "$RLINF/experiments/flow_credit/analysis/validate_ray_tmpdir.py" "$RAY_TMPDIR"
 STAMP=$(date +%Y%m%d_%H%M%S)
 WANDB_EVIDENCE_RUN_ID="n17-residual-e0-$STAMP"
-EVAL_ROOT="$BULK/evaluations/n17_residual_e0_zero_fixed500_${STAMP}"
+EVAL_ROOT="$BULK/evaluations/n17_residual_e0_seeded_fixed500_${STAMP}"
 mkdir -p "$EVAL_ROOT"
 echo "$EVAL_ROOT" > "$BULK/logs/n17_residual_e0.latest"
 git -C "$RLINF" rev-parse HEAD > "$EVAL_ROOT/git_commit.txt"
 git -C "$RLINF" status --short > "$EVAL_ROOT/git_status.txt"
+python - "$EVAL_ROOT/e0_manifest.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(
+    json.dumps(
+        {
+            "gpus": [0, 1],
+            "env_seed": 0,
+            "rollout_seed": 1234,
+            "rollout_rank_seed_rule": "rollout_seed + rollout_rank",
+            "sets": ["setA", "setB", "setC", "setD", "setE"],
+            "trials_per_variant": 500,
+            "variants": {
+                "base": {"residual_enabled": False, "force_zero": False},
+                "zero": {"residual_enabled": True, "force_zero": True},
+            },
+            "historical_unseeded_reference": "444/500",
+        },
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+PY
 
 declare -a SET_NAMES=(setA setB setC setD setE)
 declare -a OFFSETS=(0 10 20 30 40)
 
 cd "$RLINF"
-for index in "${!SET_NAMES[@]}"; do
-    set_name=${SET_NAMES[$index]}
-    offset=${OFFSETS[$index]}
-    output_dir="$EVAL_ROOT/$set_name"
-    mkdir -p "$output_dir"
-    echo "[E0] evaluating $set_name (trial offset $offset)"
-    set +e
-    EVAL_LABEL="e0-zero-$set_name" python "$ENTRY" \
-        --config-path "$EMBODIED_PATH/config" \
-        --config-name "$CONFIG_NAME" \
-        runner.resume_dir=null \
-        "++env.eval.eval_reset_offset=$offset" \
-        ++env.eval.eval_reset_limit=100 \
-        runner.logger.log_path="$output_dir" \
-        runner.logger.experiment_name="e0-zero-$set_name" \
-        2>&1 | tee "$output_dir/evaluation.log"
-    rc=${PIPESTATUS[0]}
-    set -e
-    echo "$rc" > "$output_dir/exit_code.txt"
-    ray stop --force >/dev/null 2>&1 || true
-    if [[ "$rc" -ne 0 ]]; then
-        exit "$rc"
+EVIDENCE_UPLOADED=0
+upload_evidence() {
+    python experiments/flow_credit/analysis/log_evidence_to_wandb.py \
+        --kind e0 \
+        --root "$EVAL_ROOT" \
+        --name "Residual-E0-Seeded-Equivalence-$STAMP" \
+        --run-id "$WANDB_EVIDENCE_RUN_ID"
+}
+on_exit() {
+    rc=$?
+    trap - EXIT
+    if [[ "$EVIDENCE_UPLOADED" -eq 0 ]]; then
+        echo "[E0] uploading available evidence to W&B before exit"
+        set +e
+        upload_evidence
+        set -e
     fi
-done
+    exit "$rc"
+}
+trap on_exit EXIT
 
-python experiments/flow_credit/analysis/aggregate_fixed_trial_evaluations.py \
-    --input "setA=$EVAL_ROOT/setA" \
-    --input "setB=$EVAL_ROOT/setB" \
-    --input "setC=$EVAL_ROOT/setC" \
-    --input "setD=$EVAL_ROOT/setD" \
-    --input "setE=$EVAL_ROOT/setE" \
-    --output-dir "$EVAL_ROOT/aggregate"
+run_variant() {
+    variant=$1
+    variant_root=$2
+    residual_enabled=$3
+    force_zero=$4
+    for index in "${!SET_NAMES[@]}"; do
+        set_name=${SET_NAMES[$index]}
+        offset=${OFFSETS[$index]}
+        output_dir="$variant_root/$set_name"
+        mkdir -p "$output_dir"
+        echo "[E0] evaluating $variant/$set_name (trial offset $offset)"
+        set +e
+        EVAL_LABEL="e0-$variant-$set_name" python "$ENTRY" \
+            --config-path "$EMBODIED_PATH/config" \
+            --config-name "$CONFIG_NAME" \
+            runner.resume_dir=null \
+            "++env.eval.eval_reset_offset=$offset" \
+            ++env.eval.eval_reset_limit=100 \
+            "++actor.model.rl_head_config.residual_policy.enabled=$residual_enabled" \
+            "++actor.model.rl_head_config.residual_policy.force_zero=$force_zero" \
+            "++rollout.model.rl_head_config.residual_policy.enabled=$residual_enabled" \
+            "++rollout.model.rl_head_config.residual_policy.force_zero=$force_zero" \
+            runner.logger.log_path="$output_dir" \
+            runner.logger.experiment_name="e0-$variant-$set_name" \
+            2>&1 | tee "$output_dir/evaluation.log"
+        rc=${PIPESTATUS[0]}
+        set -e
+        echo "$rc" > "$output_dir/exit_code.txt"
+        if [[ "$rc" -ne 0 ]]; then
+            exit "$rc"
+        fi
+    done
+}
 
-python experiments/flow_credit/analysis/aggregate_fixed_trial_evaluations.py \
-    --input "setB=$EVAL_ROOT/setB" \
-    --input "setC=$EVAL_ROOT/setC" \
-    --input "setD=$EVAL_ROOT/setD" \
-    --input "setE=$EVAL_ROOT/setE" \
-    --output-dir "$EVAL_ROOT/aggregate_heldout_BtoE"
+aggregate_variant() {
+    variant_root=$1
+    python experiments/flow_credit/analysis/aggregate_fixed_trial_evaluations.py \
+        --input "setA=$variant_root/setA" \
+        --input "setB=$variant_root/setB" \
+        --input "setC=$variant_root/setC" \
+        --input "setD=$variant_root/setD" \
+        --input "setE=$variant_root/setE" \
+        --output-dir "$variant_root/aggregate"
+    python experiments/flow_credit/analysis/aggregate_fixed_trial_evaluations.py \
+        --input "setB=$variant_root/setB" \
+        --input "setC=$variant_root/setC" \
+        --input "setD=$variant_root/setD" \
+        --input "setE=$variant_root/setE" \
+        --output-dir "$variant_root/aggregate_heldout_BtoE"
+}
+
+# The scientific invariant is same-pipeline equivalence under the same model
+# RNG stream. A historical unseeded 444/500 result is only a reference, not a
+# valid exact gate for a newly seeded flow-policy evaluation.
+run_variant base "$EVAL_ROOT/base" false false
+run_variant zero "$EVAL_ROOT" true true
+aggregate_variant "$EVAL_ROOT/base"
+aggregate_variant "$EVAL_ROOT"
+
+python experiments/flow_credit/analysis/analyze_residual_pairing.py \
+    --base "$EVAL_ROOT/base/aggregate/trials.csv" \
+    --candidate "$EVAL_ROOT/aggregate/trials.csv" \
+    --output-dir "$EVAL_ROOT/base_zero_pairing"
+
+python experiments/flow_credit/analysis/analyze_residual_pairing.py \
+    --base "$EVAL_ROOT/base/aggregate_heldout_BtoE/trials.csv" \
+    --candidate "$EVAL_ROOT/aggregate_heldout_BtoE/trials.csv" \
+    --output-dir "$EVAL_ROOT/base_zero_pairing_heldout_BtoE"
 
 python - "$EVAL_ROOT" <<'PY'
 import json
@@ -92,25 +172,42 @@ import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
-summary = json.loads((root / "aggregate" / "summary.json").read_text())
-expected_successes = 444
-if summary["num_trials"] != 500:
-    raise SystemExit(f"E0 failed: expected 500 trials, got {summary['num_trials']}")
-if summary["successes"] != expected_successes:
+base = json.loads((root / "base" / "aggregate" / "summary.json").read_text())
+zero = json.loads((root / "aggregate" / "summary.json").read_text())
+pairing = json.loads((root / "base_zero_pairing" / "summary.json").read_text())
+reference = {
+    "historical_unseeded_successes": 444,
+    "historical_unseeded_num_trials": 500,
+    "seeded_base_successes": base["successes"],
+    "seeded_zero_successes": zero["successes"],
+}
+(root / "historical_reference.json").write_text(
+    json.dumps(reference, indent=2) + "\n", encoding="utf-8"
+)
+if base["num_trials"] != 500 or zero["num_trials"] != 500:
+    raise SystemExit(
+        f"E0 failed: expected 500+500 trials, got "
+        f"{base['num_trials']}+{zero['num_trials']}"
+    )
+if pairing["rescue"] or pairing["harm"]:
     (root / "E0_FAIL").write_text(
-        f"expected {expected_successes}/500, got {summary['successes']}/500\n"
+        "seeded residual-disabled and force-zero outcomes differ: "
+        f"rescue={pairing['rescue']}, harm={pairing['harm']}\n",
+        encoding="utf-8",
     )
     raise SystemExit(
-        "E0 failed zero-residual equivalence: "
-        f"expected {expected_successes}/500, got {summary['successes']}/500"
+        "E0 failed paired zero-residual equivalence: "
+        f"rescue={pairing['rescue']}, harm={pairing['harm']}"
     )
-(root / "E0_PASS").write_text("zero residual reproduced 444/500\n")
-print("E0_PASS: zero residual reproduced 444/500")
+print(
+    "E0 base/zero paired equivalence passed: "
+    f"{zero['successes']}/500 (historical unseeded reference: 444/500)"
+)
 PY
 
 # E0-R: repeat the same Set-A fixed resets in an independent process. This is
-# recorded (rather than made a hard gate) so pairing uncertainty is visible
-# without blocking the first long run on an otherwise valid 444/500 E0.
+# a hard gate. With rollout.seed configured, any mismatch means the inference
+# pipeline is not repeatable enough for per-trial rescue/harm analysis.
 REPEAT_DIR="$EVAL_ROOT/setA_repeat"
 mkdir -p "$REPEAT_DIR"
 echo "[E0-R] repeating Set-A (trial offset 0) for per-trial repeatability"
@@ -121,13 +218,16 @@ EVAL_LABEL="e0-zero-setA-repeat" python "$ENTRY" \
     runner.resume_dir=null \
     ++env.eval.eval_reset_offset=0 \
     ++env.eval.eval_reset_limit=100 \
+    ++actor.model.rl_head_config.residual_policy.enabled=true \
+    ++actor.model.rl_head_config.residual_policy.force_zero=true \
+    ++rollout.model.rl_head_config.residual_policy.enabled=true \
+    ++rollout.model.rl_head_config.residual_policy.force_zero=true \
     runner.logger.log_path="$REPEAT_DIR" \
     runner.logger.experiment_name="e0-zero-setA-repeat" \
     2>&1 | tee "$REPEAT_DIR/evaluation.log"
 rc=${PIPESTATUS[0]}
 set -e
 echo "$rc" > "$REPEAT_DIR/exit_code.txt"
-ray stop --force >/dev/null 2>&1 || true
 if [[ "$rc" -ne 0 ]]; then
     exit "$rc"
 fi
@@ -160,13 +260,18 @@ marker.write_text(
 )
 print(json.dumps(payload, indent=2))
 if not repeatable:
-    print("WARNING: E0 passed 444/500 but Set-A outcomes were not exactly repeatable")
+    (root / "E0_FAIL").write_text(
+        "seeded Set-A repeatability failed\n", encoding="utf-8"
+    )
+    raise SystemExit("E0 failed: seeded Set-A outcomes were not exactly repeatable")
+(root / "E0_PASS").write_text(
+    "seeded base/zero fixed500 equivalence and Set-A repeatability passed\n",
+    encoding="utf-8",
+)
+print("E0_PASS: seeded base/zero equivalence and repeatability passed")
 PY
 
-python experiments/flow_credit/analysis/log_evidence_to_wandb.py \
-    --kind e0 \
-    --root "$EVAL_ROOT" \
-    --name "Residual-E0-Zero-Fixed500-$STAMP" \
-    --run-id "$WANDB_EVIDENCE_RUN_ID"
+upload_evidence
+EVIDENCE_UPLOADED=1
 
 echo "N17_RESIDUAL_E0_FIXED500_COMPLETE"

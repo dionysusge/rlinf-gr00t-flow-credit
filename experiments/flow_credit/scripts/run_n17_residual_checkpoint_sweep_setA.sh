@@ -23,10 +23,13 @@ export WANDB_PROJECT=GR00T-Residual-RL
 export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
-export RAY_TMPDIR="$BULK/tmp/ray-residual-sweep"
+# Keep this path short: Ray embeds a long session name below it and Linux
+# AF_UNIX socket paths are limited to 107 bytes.
+export RAY_TMPDIR=/mnt/models/gzw/raytmp/sweep
 export PYTHONPATH="$RLINF:${PYTHONPATH:-}"
 unset CUDA_VISIBLE_DEVICES 2>/dev/null || true
 unset MUJOCO_EGL_DEVICE_ID 2>/dev/null || true
+unset RAY_ADDRESS 2>/dev/null || true
 
 RUN_DIR=$(cat "$BULK/logs/n17_residual_ppo.latest")
 E0_ROOT=$(cat "$BULK/logs/n17_residual_e0.latest")
@@ -38,6 +41,7 @@ STAMP=$(date +%Y%m%d_%H%M%S)
 WANDB_EVIDENCE_RUN_ID="n17-residual-checkpoint-sweep-$STAMP"
 SWEEP_ROOT="$BULK/evaluations/n17_residual_setA_checkpoint_sweep_${STAMP}"
 mkdir -p "$SWEEP_ROOT" "$RAY_TMPDIR"
+python "$RLINF/experiments/flow_credit/analysis/validate_ray_tmpdir.py" "$RAY_TMPDIR"
 echo "$SWEEP_ROOT" > "$BULK/logs/n17_residual_setA_sweep.latest"
 printf '%s\n' "$RUN_DIR" > "$SWEEP_ROOT/training_run_dir.txt"
 printf '%s\n' "$CKPT_ROOT" > "$SWEEP_ROOT/checkpoint_root.txt"
@@ -79,7 +83,6 @@ for step in "${STEPS[@]}"; do
             --pairing-csv "$output_dir/pairing/pairing.csv" \
             --output-dir "$output_dir/residual_analysis"
     fi
-    ray stop --force >/dev/null 2>&1 || true
 done
 
 python - "$SWEEP_ROOT" "$CKPT_ROOT" <<'PY'

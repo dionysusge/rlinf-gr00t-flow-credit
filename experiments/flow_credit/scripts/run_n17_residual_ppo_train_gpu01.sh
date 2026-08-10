@@ -25,7 +25,9 @@ export WANDB_RUN_GROUP=Residual-PPO-0.1-GR00T-N1.7-LIBERO-Spatial
 export WANDB_DIR="$BULK/wandb"
 export HYDRA_FULL_ERROR=1
 export RAY_DEDUP_LOGS=0
-export RAY_TMPDIR="$BULK/tmp/ray-residual-ppo"
+# Keep this path short: Ray embeds a long session name below it and Linux
+# AF_UNIX socket paths are limited to 107 bytes.
+export RAY_TMPDIR=/mnt/models/gzw/raytmp/e1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_DEBUG=WARN
@@ -33,6 +35,7 @@ export OMP_NUM_THREADS=2
 export PYTHONPATH="$RLINF:${PYTHONPATH:-}"
 unset CUDA_VISIBLE_DEVICES 2>/dev/null || true
 unset MUJOCO_EGL_DEVICE_ID 2>/dev/null || true
+unset RAY_ADDRESS 2>/dev/null || true
 
 E0_ROOT=$(cat "$BULK/logs/n17_residual_e0.latest" 2>/dev/null || true)
 if [[ "${ALLOW_UNVERIFIED_E0:-0}" != "1" ]]; then
@@ -41,6 +44,7 @@ if [[ "${ALLOW_UNVERIFIED_E0:-0}" != "1" ]]; then
 fi
 
 mkdir -p "$RAY_TMPDIR" "$BULK/runs" "$BULK/logs" "$BULK/wandb"
+python "$RLINF/experiments/flow_credit/analysis/validate_ray_tmpdir.py" "$RAY_TMPDIR"
 STAMP=$(date +%Y%m%d_%H%M%S)
 RUN_ID="n17_residual_ppo_a01_gpu01_${STAMP}"
 RUN_NAME="Residual-PPO-0.1-GR00T-N1.7-LIBERO-Spatial-H200x2-${STAMP}"
@@ -114,6 +118,7 @@ manifest = {
     "config_name": config_name,
     "gr00t_checkpoint_path": "/data/Wayne/gzw/rlinf_gr00t_n17/models/GR00T-N1.7-LIBERO/libero_spatial",
     "actor_seed": 1234,
+    "rollout_seed": 1234,
     "env_seed": 0,
     "e0_root": os.environ.get("E0_ROOT"),
     "run_id": os.environ.get("RUN_ID"),
@@ -139,9 +144,7 @@ echo "transitions/update:  4096"
 echo "checkpoint steps:    30,60,90,120,150"
 echo "checkpoint approx:   123K,246K,369K,492K,614K transitions"
 echo "E0 root:             $E0_ROOT"
-if [[ -f "$E0_ROOT/E0_REPEATABILITY_WARNING" ]]; then
-    echo "E0 repeatability:    WARNING (inspect $E0_ROOT/setA_repeatability)"
-fi
+echo "rollout seed:         1234 (rank-offset per rollout worker)"
 echo "run dir:             $RUN_DIR"
 echo "============================================================"
 

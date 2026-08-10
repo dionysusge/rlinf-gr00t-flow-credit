@@ -23,7 +23,8 @@ The first round answers only:
 
 ## Fixed setup
 
-- Base: GR00T N1.7 LIBERO-Spatial SFT (444/500, 88.8%).
+- Historical unseeded base reference: GR00T N1.7 LIBERO-Spatial SFT
+  (444/500, 88.8%); the seeded E0 run establishes the new paired base.
 - Full PPO reference: global step 600 (458/500, 91.6%).
 - Hardware: physical H200 GPUs 0 and 1.
 - Action horizon: 16; flow steps: 4.
@@ -51,24 +52,30 @@ source /data/Wayne/gzw/rlinf_gr00t_n17/scripts/activate_rlinf.sh
 ```
 
 Run long jobs inside `tmux`. Check GPU 0/1 occupancy before launching.
+Every script validates its short `RAY_TMPDIR` before loading the model. The
+fixed-evaluation entry shuts down its own local Ray runtime; the scripts do not
+use the account-wide `ray stop --force` command.
 
-## E0: exact zero-residual check
+## E0: seeded zero-residual equivalence check
 
 ```bash
 tmux new -s residual-e0
 bash experiments/flow_credit/scripts/run_n17_residual_e0_fixed500.sh
 ```
 
-The script evaluates all five 100-trial sets with `force_zero=true`, writes
-structured `trials.csv`/`trials.jsonl`, and creates `E0_PASS` only when all 500
-trials complete and success is exactly 444/500. Do not launch E1 if E0 fails.
+Flow inference samples an initial Gaussian latent even when language/token
+sampling is disabled. `env.eval.seed` controls fixed LIBERO reset states;
+`rollout.seed=1234` separately controls that model-side RNG (with a rank
+offset). The script evaluates both residual-disabled and `force_zero=true`
+policies on all five 100-trial sets, then creates `E0_PASS` only if all 500
+paired success outcomes match exactly (`rescue=0`, `harm=0`).
 
-It also runs E0-R: an independent second Set-A evaluation and paired analysis
-against the first Set-A run. Inspect `E0_REPEATABILITY.json` and
-`setA_repeatability/`: `E0_REPEATABLE` means every one of the 100 success
-outcomes agreed. A mismatch creates `E0_REPEATABILITY_WARNING` but does not
-replace the primary 444/500 gate; it makes any later rescue/harm uncertainty
-explicit.
+It also runs E0-R: an independent second zero-residual Set-A evaluation.
+`E0_REPEATABLE` means all 100 outcomes agree. This is now a hard gate because
+per-trial rescue/harm claims are not meaningful if the seeded evaluator cannot
+repeat them. The historical unseeded 444/500 result remains in
+`historical_reference.json`; it is a reference, not an exact gate for the new
+seeded inference stream. Do not launch E1 if E0 fails.
 
 ## E1: Residual-PPO-0.1
 
@@ -165,6 +172,8 @@ rescue/harm/McNemar artifacts for every lambda. `heldout_BtoE/` and
 `heldout_BtoE_pairing/` are the primary 400-trial held-out result; all-500
 `aggregate/` and `pairing/` remain a descriptive aggregate because Set A was
 used for checkpoint selection.
+Lambda 0 is also an implementation gate: with the seeded model-side RNG it
+must reproduce every E0 outcome exactly before the curve is accepted.
 
 ## Full PPO step600 paired baseline
 

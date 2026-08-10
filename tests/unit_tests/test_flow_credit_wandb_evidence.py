@@ -122,7 +122,13 @@ def test_e0_event_flattens_all_evidence_groups(tmp_path: Path) -> None:
     for relative, payload in (
         ("aggregate/summary.json", {"success_rate": 0.888}),
         ("aggregate_heldout_BtoE/summary.json", {"success_rate": 0.89}),
+        ("base/aggregate/summary.json", {"success_rate": 0.9}),
+        ("base_zero_pairing/summary.json", {"rescue": 0, "harm": 0}),
         ("E0_REPEATABILITY.json", {"repeatable": True, "harm": 0}),
+        (
+            "historical_reference.json",
+            {"historical_unseeded_successes": 444},
+        ),
     ):
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +139,10 @@ def test_e0_event_flattens_all_evidence_groups(tmp_path: Path) -> None:
     assert step_metric is None
     assert events[0]["e0/all500/success_rate"] == 0.888
     assert events[0]["e0/heldout_BtoE/success_rate"] == 0.89
+    assert events[0]["e0/base_all500/success_rate"] == 0.9
+    assert events[0]["e0/base_zero_pairing/rescue"] == 0
     assert events[0]["e0/repeatability/repeatable"] is True
+    assert events[0]["e0/historical_reference/historical_unseeded_successes"] == 444
 
 
 def test_main_logs_metrics_tables_and_artifact(
@@ -150,6 +159,9 @@ def test_main_logs_metrics_tables_and_artifact(
         encoding="utf-8",
     )
     (tmp_path / "git_commit.txt").write_text("abc123\n", encoding="utf-8")
+    (tmp_path / "e0_manifest.json").write_text(
+        json.dumps({"rollout_seed": 1234, "env_seed": 0}), encoding="utf-8"
+    )
 
     class FakeArtifact:
         def __init__(self, **kwargs):
@@ -209,6 +221,7 @@ def test_main_logs_metrics_tables_and_artifact(
     MODULE.main()
 
     assert fake_wandb.init_kwargs["config"]["git_commit"] == "abc123"
+    assert fake_wandb.init_kwargs["config"]["e0_experiment"]["rollout_seed"] == 1234
     assert any("e0/all500/success_rate" in event for event in fake_wandb.logged)
     assert any("tables/aggregate_trials" in event for event in fake_wandb.logged)
     assert len(fake_run.artifacts) == 1

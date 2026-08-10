@@ -87,6 +87,7 @@ from rlinf.utils.utils import (
     masked_mean,
     reshape_entropy,
     retrieve_model_state_dict_in_cpu,
+    seed_everything,
 )
 from rlinf.workers.rollout.utils import RankMapper
 
@@ -1070,6 +1071,13 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         Initialize the actor worker. build the model and use corresponding training backend,
         if needed, offload model parameters and optimizer states to CPU.
         """
+        actor_seed = self.cfg.actor.get("seed", None)
+        if actor_seed is not None:
+            self.actor_seed = seed_everything(int(actor_seed))
+            self.log_info(
+                f"Seeded actor model RNGs with seed={self.actor_seed} "
+                f"(rank={self._rank})"
+            )
         self.setup_model_and_optimizer()
 
         if self.enable_offload:

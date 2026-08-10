@@ -106,6 +106,8 @@ env:
 rollout:
   group_name: RolloutGroup
   backend: huggingface
+  # Separate from env.eval.seed: this fixes GR00T's sampled flow latent.
+  seed: 1234
   enable_offload: false
   pipeline_stage_num: 1
   model:
