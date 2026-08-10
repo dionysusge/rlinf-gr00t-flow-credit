@@ -27,6 +27,16 @@ from pathlib import Path
 import numpy as np
 
 DIMENSION_NAMES = ("dx", "dy", "dz", "drx", "dry", "drz", "gripper")
+STATE_NAMES = (
+    "eef_x",
+    "eef_y",
+    "eef_z",
+    "eef_rx",
+    "eef_ry",
+    "eef_rz",
+    "gripper_0",
+    "gripper_1",
+)
 PID_PATTERN = re.compile(r"pid(\d+)")
 SATURATION_THRESHOLD = 0.09
 RAW_PRESSURE_THRESHOLD = math.atanh(0.9)
@@ -167,6 +177,16 @@ def scalar_rows(
             reset_ids = np.asarray(
                 payload.get("reset_ids", np.full(residual.shape[0], -1))
             ).reshape(-1)
+            states = np.asarray(
+                payload.get("states", np.empty((residual.shape[0], 0))),
+                dtype=np.float64,
+            ).reshape(residual.shape[0], -1)
+            task_descriptions = np.asarray(
+                payload.get(
+                    "task_descriptions",
+                    np.full(residual.shape[0], "", dtype=np.str_),
+                )
+            ).reshape(-1)
             call_idx = int(np.asarray(payload["call_idx"]).item())
             match = PID_PATTERN.search(path.name)
             worker_pid = int(match.group(1)) if match else -1
@@ -202,114 +222,125 @@ def scalar_rows(
                 if dominant_dimension_idx < len(DIMENSION_NAMES)
                 else f"dim_{dominant_dimension_idx}"
             )
-            rows.append(
-                {
-                    "worker_pid": worker_pid,
-                    "call_idx": call_idx,
-                    "batch_idx": batch_idx,
-                    "task_id": task_id,
-                    "trial_id": trial_id,
-                    "reset_id": int(reset_ids[batch_idx]),
-                    "success": outcomes.get((task_id, trial_id), ""),
-                    "action_horizon": int(residual.shape[1]),
-                    "sample_l2_mean": float(step_norm[batch_idx].mean()),
-                    "sample_l2_max": float(step_norm[batch_idx].max()),
-                    "mean_l2_mean": float(mean_norm[batch_idx].mean()),
-                    "mean_l2_max": float(mean_norm[batch_idx].max()),
-                    "exploration_l2_mean": float(exploration_norm[batch_idx].mean()),
-                    "log_std_mean": float(log_std[batch_idx].mean()),
-                    "std_mean": float(np.exp(log_std[batch_idx]).mean()),
-                    "sample_active_fraction_gt_0.01": float(
-                        (step_norm[batch_idx] > 0.01).mean()
-                    ),
-                    "sample_active_fraction_gt_0.05": float(
-                        (step_norm[batch_idx] > 0.05).mean()
-                    ),
-                    "mean_active_fraction_gt_0.01": float(
-                        (mean_norm[batch_idx] > 0.01).mean()
-                    ),
-                    "mean_active_fraction_gt_0.05": float(
-                        (mean_norm[batch_idx] > 0.05).mean()
-                    ),
-                    "sample_abs_mean": float(np.abs(item).mean()),
-                    "mean_abs_mean": float(np.abs(mean_action[batch_idx]).mean()),
-                    "exploration_abs_mean": float(
-                        np.abs(exploration_action[batch_idx]).mean()
-                    ),
-                    "sample_saturation_fraction_gt_0.09": float(
-                        (np.abs(item) > SATURATION_THRESHOLD).mean()
-                    ),
-                    "mean_saturation_fraction_gt_0.09": float(
-                        (np.abs(mean_item) > SATURATION_THRESHOLD).mean()
-                    ),
-                    "raw_sample_pressure_fraction_gt_1.472": float(
-                        (np.abs(raw_action[batch_idx]) > RAW_PRESSURE_THRESHOLD).mean()
-                    ),
-                    "raw_mean_pressure_fraction_gt_1.472": float(
-                        (np.abs(raw_mean[batch_idx]) > RAW_PRESSURE_THRESHOLD).mean()
-                    ),
-                    "mean_abs_max": float(np.abs(mean_item).max()),
-                    "dominant_dimension": dominant_dimension,
-                    "dominant_horizon": int(np.argmax(mean_norm[batch_idx])),
-                    "translation_abs_mean": float(np.abs(item[..., :3]).mean()),
-                    "rotation_abs_mean": float(np.abs(item[..., 3:6]).mean())
-                    if item.shape[-1] >= 6
-                    else float("nan"),
-                    "gripper_abs_mean": float(np.abs(item[..., 6:7]).mean())
-                    if item.shape[-1] >= 7
-                    else float("nan"),
-                    "residual_to_base_l2_ratio": float(
-                        (step_norm[batch_idx] / (base_norm[batch_idx] + 1e-8)).mean()
-                    ),
-                    "mean_residual_to_base_l2_ratio": float(
-                        (mean_norm[batch_idx] / (base_norm[batch_idx] + 1e-8)).mean()
-                    ),
-                    "environment_residual_l2_mean": float(
-                        finite_mean(environment_norm[batch_idx])
-                    ),
-                    "environment_residual_l2_max": float(
-                        finite_max(environment_norm[batch_idx])
-                    ),
-                    "decoded_translation_abs_mean": float(
-                        finite_mean(np.abs(decoded_residual[batch_idx, ..., :3]))
-                    ),
-                    "decoded_rotation_abs_mean": float(
-                        finite_mean(np.abs(decoded_residual[batch_idx, ..., 3:6]))
-                    )
-                    if item.shape[-1] >= 6
-                    else float("nan"),
-                    "decoded_gripper_abs_mean": float(
-                        finite_mean(np.abs(decoded_residual[batch_idx, ..., 6:7]))
-                    )
-                    if item.shape[-1] >= 7
-                    else float("nan"),
-                    "environment_translation_abs_mean": float(
-                        finite_mean(np.abs(environment_residual[batch_idx, ..., :3]))
-                    ),
-                    "environment_rotation_abs_mean": float(
-                        finite_mean(np.abs(environment_residual[batch_idx, ..., 3:6]))
-                    )
-                    if item.shape[-1] >= 6
-                    else float("nan"),
-                    "environment_gripper_abs_mean": float(
-                        finite_mean(np.abs(environment_residual[batch_idx, ..., 6:7]))
-                    )
-                    if item.shape[-1] >= 7
-                    else float("nan"),
-                    "base_normalized_ood_fraction": float(
-                        (np.abs(base[batch_idx]) > 1.0).mean()
-                    ),
-                    "executed_normalized_ood_fraction": float(
-                        (np.abs(executed[batch_idx]) > 1.0).mean()
-                    ),
-                    "created_normalized_ood_fraction": float(
-                        (
-                            (np.abs(base[batch_idx]) <= 1.0)
-                            & (np.abs(executed[batch_idx]) > 1.0)
-                        ).mean()
-                    ),
-                }
+            row = {
+                "worker_pid": worker_pid,
+                "call_idx": call_idx,
+                "batch_idx": batch_idx,
+                "task_id": task_id,
+                "trial_id": trial_id,
+                "reset_id": int(reset_ids[batch_idx]),
+                "success": outcomes.get((task_id, trial_id), ""),
+                "action_horizon": int(residual.shape[1]),
+                "sample_l2_mean": float(step_norm[batch_idx].mean()),
+                "sample_l2_max": float(step_norm[batch_idx].max()),
+                "mean_l2_mean": float(mean_norm[batch_idx].mean()),
+                "mean_l2_max": float(mean_norm[batch_idx].max()),
+                "exploration_l2_mean": float(exploration_norm[batch_idx].mean()),
+                "log_std_mean": float(log_std[batch_idx].mean()),
+                "std_mean": float(np.exp(log_std[batch_idx]).mean()),
+                "sample_active_fraction_gt_0.01": float(
+                    (step_norm[batch_idx] > 0.01).mean()
+                ),
+                "sample_active_fraction_gt_0.05": float(
+                    (step_norm[batch_idx] > 0.05).mean()
+                ),
+                "mean_active_fraction_gt_0.01": float(
+                    (mean_norm[batch_idx] > 0.01).mean()
+                ),
+                "mean_active_fraction_gt_0.05": float(
+                    (mean_norm[batch_idx] > 0.05).mean()
+                ),
+                "sample_abs_mean": float(np.abs(item).mean()),
+                "mean_abs_mean": float(np.abs(mean_action[batch_idx]).mean()),
+                "exploration_abs_mean": float(
+                    np.abs(exploration_action[batch_idx]).mean()
+                ),
+                "sample_saturation_fraction_gt_0.09": float(
+                    (np.abs(item) > SATURATION_THRESHOLD).mean()
+                ),
+                "mean_saturation_fraction_gt_0.09": float(
+                    (np.abs(mean_item) > SATURATION_THRESHOLD).mean()
+                ),
+                "raw_sample_pressure_fraction_gt_1.472": float(
+                    (np.abs(raw_action[batch_idx]) > RAW_PRESSURE_THRESHOLD).mean()
+                ),
+                "raw_mean_pressure_fraction_gt_1.472": float(
+                    (np.abs(raw_mean[batch_idx]) > RAW_PRESSURE_THRESHOLD).mean()
+                ),
+                "mean_abs_max": float(np.abs(mean_item).max()),
+                "dominant_dimension": dominant_dimension,
+                "dominant_horizon": int(np.argmax(mean_norm[batch_idx])),
+                "translation_abs_mean": float(np.abs(item[..., :3]).mean()),
+                "rotation_abs_mean": float(np.abs(item[..., 3:6]).mean())
+                if item.shape[-1] >= 6
+                else float("nan"),
+                "gripper_abs_mean": float(np.abs(item[..., 6:7]).mean())
+                if item.shape[-1] >= 7
+                else float("nan"),
+                "residual_to_base_l2_ratio": float(
+                    (step_norm[batch_idx] / (base_norm[batch_idx] + 1e-8)).mean()
+                ),
+                "mean_residual_to_base_l2_ratio": float(
+                    (mean_norm[batch_idx] / (base_norm[batch_idx] + 1e-8)).mean()
+                ),
+                "environment_residual_l2_mean": float(
+                    finite_mean(environment_norm[batch_idx])
+                ),
+                "environment_residual_l2_max": float(
+                    finite_max(environment_norm[batch_idx])
+                ),
+                "decoded_translation_abs_mean": float(
+                    finite_mean(np.abs(decoded_residual[batch_idx, ..., :3]))
+                ),
+                "decoded_rotation_abs_mean": float(
+                    finite_mean(np.abs(decoded_residual[batch_idx, ..., 3:6]))
+                )
+                if item.shape[-1] >= 6
+                else float("nan"),
+                "decoded_gripper_abs_mean": float(
+                    finite_mean(np.abs(decoded_residual[batch_idx, ..., 6:7]))
+                )
+                if item.shape[-1] >= 7
+                else float("nan"),
+                "environment_translation_abs_mean": float(
+                    finite_mean(np.abs(environment_residual[batch_idx, ..., :3]))
+                ),
+                "environment_rotation_abs_mean": float(
+                    finite_mean(np.abs(environment_residual[batch_idx, ..., 3:6]))
+                )
+                if item.shape[-1] >= 6
+                else float("nan"),
+                "environment_gripper_abs_mean": float(
+                    finite_mean(np.abs(environment_residual[batch_idx, ..., 6:7]))
+                )
+                if item.shape[-1] >= 7
+                else float("nan"),
+                "base_normalized_ood_fraction": float(
+                    (np.abs(base[batch_idx]) > 1.0).mean()
+                ),
+                "executed_normalized_ood_fraction": float(
+                    (np.abs(executed[batch_idx]) > 1.0).mean()
+                ),
+                "created_normalized_ood_fraction": float(
+                    (
+                        (np.abs(base[batch_idx]) <= 1.0)
+                        & (np.abs(executed[batch_idx]) > 1.0)
+                    ).mean()
+                ),
+            }
+            row["task_description"] = (
+                str(task_descriptions[batch_idx])
+                if batch_idx < len(task_descriptions)
+                else ""
             )
+            for state_idx, state_value in enumerate(states[batch_idx]):
+                state_name = (
+                    STATE_NAMES[state_idx]
+                    if state_idx < len(STATE_NAMES)
+                    else f"dim_{state_idx}"
+                )
+                row[f"state_{state_name}"] = float(state_value)
+            rows.append(row)
     if not arrays:
         raise ValueError(f"No residual_*.npz files found in {diagnostic_dir}")
     annotate_episode_time(rows)

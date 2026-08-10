@@ -61,6 +61,8 @@ def test_diagnostic_analysis_separates_mean_exploration_and_ood(
         task_ids=np.array([0]),
         trial_ids=np.array([1]),
         reset_ids=np.array([42]),
+        states=np.arange(8, dtype=np.float32)[None, :],
+        task_descriptions=np.array(["pick the object"]),
         call_idx=np.array(0),
     )
 
@@ -76,6 +78,9 @@ def test_diagnostic_analysis_separates_mean_exploration_and_ood(
     assert rows[0]["environment_residual_l2_mean"] == pytest.approx(np.sqrt(3) * 0.01)
     assert rows[0]["episode_action_call_index"] == 0
     assert rows[0]["episode_progress_bin"] == "early"
+    assert rows[0]["task_description"] == "pick the object"
+    assert rows[0]["state_eef_x"] == 0.0
+    assert rows[0]["state_gripper_1"] == 7.0
     assert np.allclose(arrays["exploration"], residual - mean)
     assert np.allclose(arrays["raw_sample"], raw_sample)
     assert np.allclose(arrays["raw_mean"], raw_mean)
