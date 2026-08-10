@@ -82,8 +82,9 @@ evaluates checkpoints near 123K, 246K, 369K, 492K and 614K transitions (steps
 30, 60, 90, 120 and 150). W&B/TensorBoard
 logs include cumulative transitions, completed episodes, residual L2/quantiles,
 active fractions, each action dimension, each of 16 chunk horizons, and the
-residual/base norm ratio. They also separate sampled correction, deterministic
-policy-mean correction and exploration correction; record Gaussian `log_std`,
+sample and deterministic-mean residual/base norm ratios. They also separate
+sampled correction, deterministic policy-mean correction and exploration
+correction; record Gaussian `log_std`,
 sample and policy-mean 0.09 saturation fractions, raw sample and raw mean
 constraint pressure above `atanh(0.9)=1.472`, normalized-action OOD fractions, PPO ratio
 mean/p95/max, clip fraction, approximate KL, actor/critic losses, gradient norm
@@ -112,6 +113,13 @@ For every checkpoint this produces:
   success-conditioned analysis;
 - `per_trial_residual.csv`, `high_pressure_trials.csv`, and
   `transition_conditioned.csv`, joined to preserve/rescue/harm/unresolved;
+- `step_records.csv` as the ordered per-action-call trajectory, plus
+  `per_episode_time.csv` and `per_task_episode_time.csv` using explicit
+  early/middle/late temporal proxy bins;
+- `per_task_residual.csv` for task heterogeneity and
+  `per_decoded_dimension.csv` / `per_environment_dimension.csv` for the
+  correction after GR00T unnormalization/relative-action decode and after the
+  final LIBERO gripper command conversion, respectively;
 - `checkpoint_summary.csv` indexed by both optimizer step and environment
   transitions;
 - `checkpoint_selection_ranking.csv`, `selection.json` and
@@ -129,12 +137,19 @@ cases to inspect before considering a 0.2 bound. Per-dimension and per-horizon
 pressure distinguish a global radius limitation from rotation/gripper-specific
 or short-horizon correction structure.
 
+The temporal bins are computed from exact action-call order within each fixed
+trial. They answer *when* the intervention occurs, but they are not semantic
+phase labels such as approach/grasp/place. Use `step_records.csv` and the
+task/trial/reset IDs in `high_pressure_trials.csv` to select trajectory or video
+cases before making a semantic phase claim.
+
 E0, checkpoint sweep, strength curve and Full-PPO paired evaluation each create
 one run in the `GR00T-Residual-RL` W&B project under the
-`Residual-Locality-Evidence` group. Success, rescue/harm, selection, saturation
-and raw-pressure values are logged as metrics. Trial, high-pressure and
-transition-conditioned CSVs are logged as Tables and all compact structured
-files are retained as an artifact. Raw NPZ shards are intentionally local-only.
+`Residual-Locality-Evidence` group. Success, rescue/harm, selection, saturation,
+raw-pressure and temporal summary values are logged as metrics. Trial, task,
+temporal, dimension, horizon, high-pressure and transition-conditioned CSVs are
+logged as Tables and all compact structured files are retained as an artifact.
+Raw NPZ shards are intentionally local-only.
 
 ## E2: residual strength curve
 
@@ -173,9 +188,11 @@ E0 with preserve/rescue/harm/unresolved and exact McNemar statistics.
 - Descriptive aggregate: Sets A--E (500 trials).
 
 Report success together with rescue, harm, net rescue and per-task pairing. Do
-not interpret a small normalized residual as a small physical correction until
-the best checkpoint has been re-dumped with decoded physical-space action
-statistics.
+not interpret a small normalized residual as a small physical correction by
+itself: use the automatically emitted `decoded_*` / `environment_*`
+diagnostics and their per-dimension CSVs. The frozen base and executed action
+are decoded separately through the same state-conditioned GR00T path; the
+`environment_*` layer also applies LIBERO's final binary gripper conversion.
 
 ## Go / no-go
 

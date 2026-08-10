@@ -43,6 +43,8 @@ def test_diagnostic_analysis_separates_mean_exploration_and_ood(
     raw_mean = np.full((1, 2, 3), 1.0, dtype=np.float32)
     base = np.full((1, 2, 3), 0.98, dtype=np.float32)
     executed = base + residual
+    environment_base = np.full((1, 2, 3), 0.2, dtype=np.float32)
+    environment_residual = np.full((1, 2, 3), 0.01, dtype=np.float32)
     np.savez_compressed(
         diagnostic_dir / "residual_000000_pid123.npz",
         residual_action=residual,
@@ -53,6 +55,9 @@ def test_diagnostic_analysis_separates_mean_exploration_and_ood(
         residual_log_std=np.full((1, 2, 3), -2.5, dtype=np.float32),
         base_action=base,
         executed_normalized_action=executed,
+        environment_base_action=environment_base,
+        environment_executed_action=environment_base + environment_residual,
+        environment_residual_action=environment_residual,
         task_ids=np.array([0]),
         trial_ids=np.array([1]),
         reset_ids=np.array([42]),
@@ -68,6 +73,9 @@ def test_diagnostic_analysis_separates_mean_exploration_and_ood(
     assert rows[0]["raw_mean_pressure_fraction_gt_1.472"] == 0.0
     assert rows[0]["created_normalized_ood_fraction"] == 1.0
     assert rows[0]["mean_l2_mean"] == pytest.approx(np.sqrt(3) * 0.05)
+    assert rows[0]["environment_residual_l2_mean"] == pytest.approx(np.sqrt(3) * 0.01)
+    assert rows[0]["episode_action_call_index"] == 0
+    assert rows[0]["episode_progress_bin"] == "early"
     assert np.allclose(arrays["exploration"], residual - mean)
     assert np.allclose(arrays["raw_sample"], raw_sample)
     assert np.allclose(arrays["raw_mean"], raw_mean)
@@ -106,6 +114,11 @@ def test_diagnostic_analysis_separates_mean_exploration_and_ood(
     MODULE.main()
 
     assert (output_dir / "per_trial_residual.csv").is_file()
+    assert (output_dir / "per_task_residual.csv").is_file()
+    assert (output_dir / "per_episode_time.csv").is_file()
+    assert (output_dir / "per_task_episode_time.csv").is_file()
+    assert (output_dir / "per_decoded_dimension.csv").is_file()
+    assert (output_dir / "per_environment_dimension.csv").is_file()
     assert (output_dir / "high_pressure_trials.csv").is_file()
     assert (output_dir / "transition_conditioned.csv").is_file()
     assert "rescue" in (output_dir / "per_trial_residual.csv").read_text(
@@ -124,6 +137,9 @@ def test_high_pressure_trial_selection() -> None:
         "max_mean_residual_abs": 0.096,
         "dominant_dimension": "drx",
         "dominant_horizon": 0,
+        "peak_episode_action_call_index": 2,
+        "peak_episode_progress_fraction": 0.5,
+        "peak_episode_progress_bin": "middle",
     }
 
     selected = MODULE.high_pressure_trials([trial])
@@ -139,5 +155,34 @@ def test_high_pressure_trial_selection() -> None:
             "max_mean_residual_abs": 0.096,
             "dominant_dimension": "drx",
             "dominant_horizon": 0,
+            "peak_episode_action_call_index": 2,
+            "peak_episode_progress_fraction": 0.5,
+            "peak_episode_progress_bin": "middle",
         }
     ]
+
+
+def test_episode_timeline_uses_order_within_each_trial() -> None:
+    rows = [
+        {
+            "worker_pid": 10,
+            "batch_idx": 0,
+            "task_id": 1,
+            "trial_id": 2,
+            "reset_id": 3,
+            "call_idx": call_idx,
+            "action_horizon": 16,
+        }
+        for call_idx in (9, 3, 6)
+    ]
+
+    MODULE.annotate_episode_time(rows)
+
+    ordered = sorted(rows, key=lambda row: row["call_idx"])
+    assert [row["episode_action_call_index"] for row in ordered] == [0, 1, 2]
+    assert [row["episode_progress_bin"] for row in ordered] == [
+        "early",
+        "middle",
+        "late",
+    ]
+    assert [row["episode_chunk_start_step"] for row in ordered] == [0, 16, 32]

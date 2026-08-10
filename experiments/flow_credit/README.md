@@ -25,8 +25,12 @@ full normalized GR00T action proposal; it executes
 `a_GR00T + 0.1 * tanh(raw_correction)` without activating the sum again. The
 pipeline records paired rescue/harm outcomes, per-dimension and per-horizon
 corrections, sample/mean saturation, raw constraint pressure and trial-level
-high-pressure cases. It also records Set-A repeatability, a pre-registered Set-A
-selection rule, B--E held-out results and a paired Full-PPO step600 reference.
+high-pressure cases. The diagnostic decode path additionally records continuous
+decoded actions and the final LIBERO action representation (including binary
+gripper conversion), plus per-trial timing, early/middle/late temporal proxies
+and per-task views. It
+also records Set-A repeatability, a pre-registered Set-A selection rule, B--E
+held-out results and a paired Full-PPO step600 reference.
 Training curves and every evaluation stage are synchronized to the
 `GR00T-Residual-RL` W&B project. Compact CSV/JSON/YAML evidence is uploaded as
 an artifact and the key trial files are exposed as W&B Tables; raw diagnostic

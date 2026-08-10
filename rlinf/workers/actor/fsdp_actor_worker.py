@@ -1341,6 +1341,13 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 rollout_metrics["residual/to_base_l2_ratio_mean"] = float(
                     (residual_norm / (base_norm + 1e-8)).mean().item()
                 )
+                if mean_actions is not None:
+                    mean_residual_norm = torch.linalg.vector_norm(
+                        mean_actions.detach().float(), dim=-1
+                    )
+                    rollout_metrics["residual/mean_to_base_l2_ratio_mean"] = float(
+                        (mean_residual_norm / (base_norm + 1e-8)).mean().item()
+                    )
                 executed_actions = forward_inputs.get("executed_normalized_action")
                 if executed_actions is not None:
                     base_abs = base_actions.detach().float().abs()

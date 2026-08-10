@@ -30,6 +30,7 @@ from torch.distributions import Normal
 from transformers import Qwen3VLForConditionalGeneration, Qwen3VLProcessor
 from transformers.feature_extraction_utils import BatchFeature
 
+from rlinf.envs.action_utils import prepare_actions_for_libero
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
 from rlinf.models.embodiment.gr00t.residual_policy import GaussianResidualActor
 from rlinf.models.embodiment.gr00t.simulation_io import (
@@ -1210,7 +1211,6 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         observations, obs_copy, is_batch = self._prepare_rollout_observation(env_obs)
         normalized_action, result = self._predict_normalized_action(obs_copy, mode)
         self._maybe_dump_flow_diagnostic(env_obs, result)
-        self._maybe_dump_residual_diagnostic(env_obs, result, normalized_action)
         unnormalized_action = self._get_unnormalized_action(
             normalized_action,
             state=observations,
@@ -1222,6 +1222,14 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         raw_action = self.action_convert_fn(
             unnormalized_action,
             chunk_size=self.output_action_chunks,
+        )
+        self._maybe_dump_residual_diagnostic(
+            env_obs,
+            result,
+            normalized_action,
+            observations=observations,
+            is_batch=is_batch,
+            executed_environment_action=raw_action,
         )
         raw_action = self._apply_exploration_noise(raw_action, mode)
         return raw_action, result
@@ -1487,8 +1495,20 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         env_obs: dict[str, Any],
         result: dict[str, Any],
         normalized_action: torch.Tensor,
+        *,
+        observations: dict[str, Any],
+        is_batch: bool,
+        executed_environment_action: np.ndarray | torch.Tensor,
     ) -> None:
-        """Write residual actions and trial metadata for offline analysis."""
+        """Write normalized and decoded residual evidence for offline analysis.
+
+        ``decoded_*`` arrays retain the continuous GR00T decode. For LIBERO,
+        ``environment_*`` additionally applies the exact shared gripper command
+        conversion used by the environment worker. This is important because a
+        bound of 0.1 in normalized space has a different physical meaning for
+        translation, rotation, and gripper dimensions, and a continuous gripper
+        correction may leave the final binary command unchanged.
+        """
         diag_dir = os.environ.get("RESIDUAL_DIAG_DIR")
         diagnostic = result.get("residual_diagnostic")
         if not diag_dir or not diagnostic:
@@ -1515,6 +1535,41 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             except Exception:
                 return None
 
+        base_normalized_action = normalized_action.detach().clone()
+        diagnostic_base = diagnostic["base_action"].to(base_normalized_action.dtype)
+        horizon, action_dim = diagnostic_base.shape[-2:]
+        base_normalized_action[:, :horizon, :action_dim] = diagnostic_base
+        base_unnormalized_action = self._get_unnormalized_action(
+            base_normalized_action,
+            state=observations,
+        )
+        if not is_batch:
+            base_unnormalized_action = squeeze_dict_values(base_unnormalized_action)
+        base_decoded_action = self.action_convert_fn(
+            base_unnormalized_action,
+            chunk_size=self.output_action_chunks,
+        )
+        base_decoded_action = to_numpy(base_decoded_action)
+        executed_decoded_action = to_numpy(executed_environment_action)
+        if self.obs_converter_type == "libero":
+            base_environment_action = prepare_actions_for_libero(
+                base_decoded_action.copy(),
+                model_type="gr00t_n1d7",
+            )
+            executed_environment_action = prepare_actions_for_libero(
+                executed_decoded_action.copy(),
+                model_type="gr00t_n1d7",
+            )
+        else:
+            base_environment_action = base_decoded_action
+            executed_environment_action = executed_decoded_action
+        if base_environment_action.shape != executed_environment_action.shape:
+            raise ValueError(
+                "Decoded base/executed action shape mismatch: "
+                f"{base_environment_action.shape} vs "
+                f"{executed_environment_action.shape}"
+            )
+
         payload = {
             "call_idx": np.asarray(call_idx, dtype=np.int64),
             "base_action": to_numpy(diagnostic["base_action"]),
@@ -1525,6 +1580,14 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             "residual_mean": to_numpy(diagnostic["mean"]),
             "residual_log_std": to_numpy(diagnostic["log_std"]),
             "executed_normalized_action": to_numpy(normalized_action),
+            "decoded_base_action": base_decoded_action,
+            "decoded_executed_action": executed_decoded_action,
+            "decoded_residual_action": (executed_decoded_action - base_decoded_action),
+            "environment_base_action": base_environment_action,
+            "environment_executed_action": executed_environment_action,
+            "environment_residual_action": (
+                executed_environment_action - base_environment_action
+            ),
             "residual_bound": np.asarray(
                 self.action_head.residual_actor.residual_bound,
                 dtype=np.float32,

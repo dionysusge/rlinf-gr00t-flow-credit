@@ -80,6 +80,33 @@ def test_structured_artifact_excludes_raw_diagnostics(tmp_path: Path) -> None:
     assert files == [tmp_path / "summary.json"]
 
 
+def test_checkpoint_tables_include_temporal_task_and_decoded_action_views(
+    tmp_path: Path,
+) -> None:
+    analysis_dir = tmp_path / "step30" / "residual_analysis"
+    analysis_dir.mkdir(parents=True)
+    for filename in (
+        "per_task_residual.csv",
+        "per_episode_time.csv",
+        "per_task_episode_time.csv",
+        "per_decoded_dimension.csv",
+        "per_environment_dimension.csv",
+    ):
+        (analysis_dir / filename).write_text("value\n1\n", encoding="utf-8")
+    pairing_dir = tmp_path / "step30" / "pairing"
+    pairing_dir.mkdir()
+    (pairing_dir / "per_task.csv").write_text("task_id\n0\n", encoding="utf-8")
+
+    tables = dict(MODULE.table_paths("checkpoint_sweep", tmp_path))
+
+    assert "step30_residual_analysis_per_task_residual" in tables
+    assert "step30_residual_analysis_per_episode_time" in tables
+    assert "step30_residual_analysis_per_task_episode_time" in tables
+    assert "step30_residual_analysis_per_decoded_dimension" in tables
+    assert "step30_residual_analysis_per_environment_dimension" in tables
+    assert "step30_pairing_per_task" in tables
+
+
 def test_training_artifact_excludes_checkpoint_metadata(tmp_path: Path) -> None:
     (tmp_path / "run_manifest.json").write_text("{}\n", encoding="utf-8")
     checkpoint_dir = tmp_path / "checkpoints" / "global_step_30"

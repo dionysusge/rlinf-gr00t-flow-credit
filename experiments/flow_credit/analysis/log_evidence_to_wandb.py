@@ -171,16 +171,24 @@ def table_paths(kind: str, root: Path) -> list[tuple[str, Path]]:
         if path.is_file():
             selected.append((relative.removesuffix(".csv").replace("/", "_"), path))
 
-    if kind in {"checkpoint_sweep", "strength_curve"}:
-        for path in sorted(root.rglob("per_trial_residual.csv")):
-            relative = path.relative_to(root).as_posix()
-            selected.append((relative.removesuffix(".csv").replace("/", "_"), path))
-        for path in sorted(root.rglob("high_pressure_trials.csv")):
-            relative = path.relative_to(root).as_posix()
-            selected.append((relative.removesuffix(".csv").replace("/", "_"), path))
-        for path in sorted(root.rglob("transition_conditioned.csv")):
-            relative = path.relative_to(root).as_posix()
-            selected.append((relative.removesuffix(".csv").replace("/", "_"), path))
+    diagnostic_tables = (
+        "per_trial_residual.csv",
+        "per_task_residual.csv",
+        "per_episode_time.csv",
+        "per_task_episode_time.csv",
+        "per_horizon.csv",
+        "per_dimension.csv",
+        "per_decoded_dimension.csv",
+        "per_environment_dimension.csv",
+        "high_pressure_trials.csv",
+        "transition_conditioned.csv",
+        "per_task.csv",
+    )
+    if kind in {"checkpoint_sweep", "strength_curve", "fullppo"}:
+        for filename in diagnostic_tables:
+            for path in sorted(root.rglob(filename)):
+                relative = path.relative_to(root).as_posix()
+                selected.append((relative.removesuffix(".csv").replace("/", "_"), path))
     return selected
 
 
