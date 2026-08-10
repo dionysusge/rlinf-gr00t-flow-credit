@@ -31,6 +31,8 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 GaussianResidualActor = MODULE.GaussianResidualActor
+RAW_PRESSURE_THRESHOLD = MODULE.RAW_PRESSURE_THRESHOLD
+summarize_constraint_pressure = MODULE.summarize_constraint_pressure
 summarize_residual_actions = MODULE.summarize_residual_actions
 summarize_residual_log_std = MODULE.summarize_residual_log_std
 
@@ -52,8 +54,9 @@ def test_zero_initialized_residual_is_exactly_zero_in_eval() -> None:
     actor = make_actor()
     vlm = torch.randn(2, 5, 8)
     state = torch.randn(2, 1, 6)
+    base_action = torch.randn(2, 4, 3)
 
-    output = actor.sample(vlm, state, deterministic=True)
+    output = actor.sample(vlm, state, base_action, deterministic=True)
 
     assert output.raw_action.shape == (2, 4, 3)
     assert torch.equal(output.mean, torch.zeros_like(output.mean))
@@ -71,9 +74,15 @@ def test_residual_sample_and_recomputed_logprob_match() -> None:
     actor = make_actor()
     vlm = torch.randn(2, 5, 8)
     state = torch.randn(2, 1, 6)
+    base_action = torch.randn(2, 4, 3)
 
-    output = actor.sample(vlm, state, deterministic=False)
-    recomputed, entropy = actor.evaluate_actions(vlm, state, output.raw_action)
+    output = actor.sample(vlm, state, base_action, deterministic=False)
+    recomputed, entropy = actor.evaluate_actions(
+        vlm,
+        state,
+        base_action,
+        output.raw_action,
+    )
 
     assert output.action.abs().max() <= 0.1
     assert torch.allclose(recomputed, output.logprobs)
@@ -84,9 +93,16 @@ def test_force_zero_does_not_consume_sampling_rng() -> None:
     actor = make_actor()
     vlm = torch.randn(2, 5, 8)
     state = torch.randn(2, 1, 6)
+    base_action = torch.randn(2, 4, 3)
     state_before = torch.random.get_rng_state()
 
-    output = actor.sample(vlm, state, deterministic=False, force_zero=True)
+    output = actor.sample(
+        vlm,
+        state,
+        base_action,
+        deterministic=False,
+        force_zero=True,
+    )
 
     assert torch.equal(torch.random.get_rng_state(), state_before)
     assert torch.equal(output.raw_action, torch.zeros_like(output.raw_action))
@@ -130,11 +146,74 @@ def test_residual_summary_separates_mean_noise_and_saturation() -> None:
     )
 
 
+def test_constraint_pressure_has_dimension_and_horizon_metrics() -> None:
+    raw_actions = torch.full((2, 4, 3), RAW_PRESSURE_THRESHOLD + 0.01)
+
+    summary = summarize_constraint_pressure(
+        raw_actions,
+        threshold=RAW_PRESSURE_THRESHOLD,
+        dimension_names=("x", "y", "z"),
+    )
+
+    assert summary["residual/raw_sample/pressure_fraction_gt_1.472"] == 1.0
+    assert summary["residual/raw_sample/dimension/x_pressure_fraction_gt_1.472"] == 1.0
+    assert summary["residual/raw_sample/horizon/03_pressure_fraction_gt_1.472"] == 1.0
+
+
+def test_residual_actor_conditions_on_base_action() -> None:
+    torch.manual_seed(11)
+    actor = make_actor()
+    torch.nn.init.normal_(actor.mean_head.weight)
+    vlm = torch.randn(2, 5, 8)
+    state = torch.randn(2, 1, 6)
+
+    _, zero_base_mean, _ = actor.distribution(
+        vlm,
+        state,
+        torch.zeros(2, 4, 3),
+    )
+    _, shifted_base_mean, _ = actor.distribution(
+        vlm,
+        state,
+        torch.ones(2, 4, 3),
+    )
+
+    assert not torch.allclose(zero_base_mean, shifted_base_mean)
+
+
+def test_inference_mode_base_action_supports_residual_backward() -> None:
+    actor = make_actor()
+    with torch.inference_mode():
+        base_action = torch.randn(2, 4, 3)
+
+    output = actor.sample(
+        torch.randn(2, 5, 8),
+        torch.randn(2, 1, 6),
+        base_action,
+        deterministic=True,
+    )
+    output.mean.sum().backward()
+
+    assert actor.mean_head.weight.grad is not None
+
+
 def test_residual_actor_rejects_mismatched_feature_width() -> None:
     actor = make_actor()
     with pytest.raises(ValueError, match="Expected VLM width"):
         actor.sample(
             torch.randn(2, 5, 7),
             torch.randn(2, 1, 6),
+            torch.randn(2, 4, 3),
+            deterministic=True,
+        )
+
+
+def test_residual_actor_rejects_mismatched_base_action_shape() -> None:
+    actor = make_actor()
+    with pytest.raises(ValueError, match="Expected base_action trailing shape"):
+        actor.sample(
+            torch.randn(2, 5, 8),
+            torch.randn(2, 1, 6),
+            torch.randn(2, 3, 3),
             deterministic=True,
         )

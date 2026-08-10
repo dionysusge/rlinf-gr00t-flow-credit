@@ -67,6 +67,7 @@ for step in "${STEPS[@]}"; do
         python experiments/flow_credit/analysis/analyze_residual_diagnostics.py \
             --diagnostic-dir "$output_dir/residual_diagnostics" \
             --trials-csv "$output_dir/trials.csv" \
+            --pairing-csv "$output_dir/pairing/pairing.csv" \
             --output-dir "$output_dir/residual_analysis"
     fi
     ray stop --force >/dev/null 2>&1 || true

@@ -598,6 +598,7 @@ class FlowMatchingActionHeadForRLActionPrediction(Gr00tN1d7ActionHead):
         self,
         backbone_output: BatchFeature,
         action_input: BatchFeature,
+        base_action: torch.Tensor,
         *,
         mode: Literal["train", "eval"],
     ) -> dict[str, torch.Tensor]:
@@ -623,6 +624,7 @@ class FlowMatchingActionHeadForRLActionPrediction(Gr00tN1d7ActionHead):
         policy_output = self.residual_actor.sample(
             vl_embs,
             state_features,
+            base_action,
             deterministic=mode == "eval",
             force_zero=force_zero,
             scale=scale,
@@ -651,6 +653,7 @@ class FlowMatchingActionHeadForRLActionPrediction(Gr00tN1d7ActionHead):
         self,
         backbone_output: BatchFeature,
         action_input: BatchFeature,
+        base_action: torch.Tensor,
         raw_actions: torch.Tensor,
         *,
         compute_values: bool,
@@ -670,6 +673,7 @@ class FlowMatchingActionHeadForRLActionPrediction(Gr00tN1d7ActionHead):
         logprobs, entropy = self.residual_actor.evaluate_actions(
             vl_embs,
             state_features,
+            base_action,
             raw_actions,
         )
         if compute_values:
@@ -1167,6 +1171,9 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         raw_actions = forward_inputs.get("residual_raw_action")
         if raw_actions is None:
             raise KeyError("Residual PPO rollout is missing residual_raw_action")
+        base_action = forward_inputs.get("base_action")
+        if base_action is None:
+            raise KeyError("Residual PPO rollout is missing base_action")
         normalized_input = _normalize_gr00t_forward_inputs(forward_inputs)
         normalized_input = _canonicalize_gr00t_text_forward_inputs(
             normalized_input,
@@ -1177,6 +1184,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         logprobs, entropy, values = self.action_head.evaluate_residual_actions(
             backbone_outputs,
             action_inputs,
+            base_action,
             raw_actions,
             compute_values=compute_values,
         )
@@ -1641,18 +1649,35 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         """Run frozen GR00T and add a bounded residual in normalized action space."""
         base_action = self._get_action_from_normalized_input(normalized_input)
+        expected_horizon = self.action_head.residual_actor.action_horizon
+        expected_action_dim = self.action_head.residual_actor.action_dim
+        if base_action.ndim != 3 or base_action.shape[1] < expected_horizon:
+            raise ValueError(
+                "GR00T base action must provide at least "
+                f"{expected_horizon} horizon steps, got {tuple(base_action.shape)}"
+            )
+        if base_action.shape[2] < expected_action_dim:
+            raise ValueError(
+                "GR00T base action must provide at least "
+                f"{expected_action_dim} action dimensions, got "
+                f"{tuple(base_action.shape)}"
+            )
+        base_action_for_residual = (
+            base_action[:, :expected_horizon, :expected_action_dim].detach().clone()
+        )
         normalized_input = _normalize_gr00t_forward_inputs(normalized_input)
         backbone_inputs, action_inputs = self.prepare_input(normalized_input)
         backbone_outputs = self.backbone(backbone_inputs)
         residual = self.action_head.get_residual_action(
             backbone_outputs,
             action_inputs,
+            base_action_for_residual,
             mode=mode,
         )
 
         action = base_action.clone()
-        horizon = min(action.shape[1], residual["action"].shape[1])
-        action_dim = min(action.shape[2], residual["action"].shape[2])
+        horizon = expected_horizon
+        action_dim = expected_action_dim
         action[:, :horizon, :action_dim] = action[:, :horizon, :action_dim] + residual[
             "action"
         ][:, :horizon, :action_dim].to(action.dtype)
@@ -1667,11 +1692,12 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         }
         forward_inputs = {
             "residual_raw_action": residual["raw_action"],
+            "residual_raw_mean": residual["mean"],
             "residual_action": residual["action"],
             "residual_mean_action": residual["mean_action"],
             "residual_exploration_action": residual["exploration_action"],
             "residual_log_std": residual["log_std"],
-            "base_action": base_action[:, :horizon, :action_dim],
+            "base_action": base_action_for_residual,
             "executed_normalized_action": action[:, :horizon, :action_dim],
             **stashed_forward_inputs,
         }
@@ -1680,7 +1706,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             "prev_values": residual["values"],
             "forward_inputs": self._finalize_rollout_forward_inputs(forward_inputs),
             "residual_diagnostic": {
-                "base_action": base_action[:, :horizon, :action_dim],
+                "base_action": base_action_for_residual,
                 "raw_action": residual["raw_action"],
                 "action": residual["action"],
                 "mean": residual["mean"],

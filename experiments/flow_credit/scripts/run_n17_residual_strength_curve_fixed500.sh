@@ -77,6 +77,18 @@ for lambda in "${LAMBDAS[@]}"; do
         --base "$E0_ROOT/aggregate/trials.csv" \
         --candidate "$lambda_root/aggregate/trials.csv" \
         --output-dir "$lambda_root/pairing"
+    if [[ "$lambda" == "1.0" ]]; then
+        for set_name in "${SET_NAMES[@]}"; do
+            output_dir="$lambda_root/$set_name"
+            if [[ -d "$output_dir/residual_diagnostics" ]]; then
+                python experiments/flow_credit/analysis/analyze_residual_diagnostics.py \
+                    --diagnostic-dir "$output_dir/residual_diagnostics" \
+                    --trials-csv "$output_dir/trials.csv" \
+                    --pairing-csv "$lambda_root/pairing/pairing.csv" \
+                    --output-dir "$output_dir/residual_analysis"
+            fi
+        done
+    fi
     python experiments/flow_credit/analysis/aggregate_fixed_trial_evaluations.py \
         "${heldout_inputs[@]}" --output-dir "$lambda_root/heldout_BtoE"
     python experiments/flow_credit/analysis/analyze_residual_pairing.py \

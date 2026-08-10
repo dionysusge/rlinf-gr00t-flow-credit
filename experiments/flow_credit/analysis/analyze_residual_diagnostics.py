@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -27,6 +28,8 @@ import numpy as np
 
 DIMENSION_NAMES = ("dx", "dy", "dz", "drx", "dry", "drz", "gripper")
 PID_PATTERN = re.compile(r"pid(\d+)")
+SATURATION_THRESHOLD = 0.09
+RAW_PRESSURE_THRESHOLD = math.atanh(0.9)
 
 
 def read_outcomes(path: Path | None) -> dict[tuple[int, int], int]:
@@ -36,6 +39,17 @@ def read_outcomes(path: Path | None) -> dict[tuple[int, int], int]:
         rows = list(csv.DictReader(handle))
     return {
         (int(row["task_id"]), int(row["trial_id"])): int(row["success"]) for row in rows
+    }
+
+
+def read_pairing(path: Path | None) -> dict[tuple[int, int], str]:
+    """Read preserve/rescue/harm/unresolved labels from paired evaluation."""
+    if path is None:
+        return {}
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    return {
+        (int(row["task_id"]), int(row["trial_id"])): row["transition"] for row in rows
     }
 
 
@@ -68,6 +82,32 @@ def scalar_rows(
                 dtype=np.float64,
             )
             log_std = np.asarray(payload["residual_log_std"], dtype=np.float64)
+            raw_action = np.asarray(
+                payload.get(
+                    "residual_raw_action",
+                    np.arctanh(
+                        np.clip(
+                            residual / max(residual_bound * eval_scale, 1e-8),
+                            -1 + 1e-7,
+                            1 - 1e-7,
+                        )
+                    ),
+                ),
+                dtype=np.float64,
+            )
+            raw_mean = np.asarray(
+                payload.get(
+                    "residual_mean",
+                    np.arctanh(
+                        np.clip(
+                            mean_action / max(residual_bound * eval_scale, 1e-8),
+                            -1 + 1e-7,
+                            1 - 1e-7,
+                        )
+                    ),
+                ),
+                dtype=np.float64,
+            )
             executed = np.asarray(
                 payload.get("executed_normalized_action", base + residual),
                 dtype=np.float64,
@@ -88,6 +128,8 @@ def scalar_rows(
         arrays["sample"].append(residual)
         arrays["mean"].append(mean_action)
         arrays["exploration"].append(exploration_action)
+        arrays["raw_sample"].append(raw_action)
+        arrays["raw_mean"].append(raw_mean)
         arrays["log_std"].append(log_std)
         arrays["base"].append(base)
         arrays["executed"].append(executed)
@@ -99,6 +141,14 @@ def scalar_rows(
             task_id = int(task_ids[batch_idx])
             trial_id = int(trial_ids[batch_idx])
             item = residual[batch_idx]
+            mean_item = mean_action[batch_idx]
+            mean_dimension_abs = np.abs(mean_item).mean(axis=0)
+            dominant_dimension_idx = int(np.argmax(mean_dimension_abs))
+            dominant_dimension = (
+                DIMENSION_NAMES[dominant_dimension_idx]
+                if dominant_dimension_idx < len(DIMENSION_NAMES)
+                else f"dim_{dominant_dimension_idx}"
+            )
             rows.append(
                 {
                     "worker_pid": worker_pid,
@@ -111,6 +161,7 @@ def scalar_rows(
                     "sample_l2_mean": float(step_norm[batch_idx].mean()),
                     "sample_l2_max": float(step_norm[batch_idx].max()),
                     "mean_l2_mean": float(mean_norm[batch_idx].mean()),
+                    "mean_l2_max": float(mean_norm[batch_idx].max()),
                     "exploration_l2_mean": float(exploration_norm[batch_idx].mean()),
                     "sample_abs_mean": float(np.abs(item).mean()),
                     "mean_abs_mean": float(np.abs(mean_action[batch_idx]).mean()),
@@ -118,8 +169,20 @@ def scalar_rows(
                         np.abs(exploration_action[batch_idx]).mean()
                     ),
                     "sample_saturation_fraction_gt_0.09": float(
-                        (np.abs(item) > 0.09).mean()
+                        (np.abs(item) > SATURATION_THRESHOLD).mean()
                     ),
+                    "mean_saturation_fraction_gt_0.09": float(
+                        (np.abs(mean_item) > SATURATION_THRESHOLD).mean()
+                    ),
+                    "raw_sample_pressure_fraction_gt_1.472": float(
+                        (np.abs(raw_action[batch_idx]) > RAW_PRESSURE_THRESHOLD).mean()
+                    ),
+                    "raw_mean_pressure_fraction_gt_1.472": float(
+                        (np.abs(raw_mean[batch_idx]) > RAW_PRESSURE_THRESHOLD).mean()
+                    ),
+                    "mean_abs_max": float(np.abs(mean_item).max()),
+                    "dominant_dimension": dominant_dimension,
+                    "dominant_horizon": int(np.argmax(mean_norm[batch_idx])),
                     "translation_abs_mean": float(np.abs(item[..., :3]).mean()),
                     "rotation_abs_mean": float(np.abs(item[..., 3:6]).mean())
                     if item.shape[-1] >= 6
@@ -151,6 +214,88 @@ def scalar_rows(
     }
 
 
+def aggregate_trials(
+    rows: list[dict[str, object]],
+    pairing: dict[tuple[int, int], str],
+) -> list[dict[str, object]]:
+    """Aggregate per-call diagnostic records into trial-level evidence."""
+    grouped: dict[tuple[int, int], list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        grouped[(int(row["task_id"]), int(row["trial_id"]))].append(row)
+
+    trial_rows = []
+    for (task_id, trial_id), values in sorted(grouped.items()):
+        max_pressure_row = max(values, key=lambda row: float(row["mean_abs_max"]))
+
+        def mean(field: str) -> float:
+            return float(np.mean([float(row[field]) for row in values]))
+
+        success = next((row["success"] for row in values if row["success"] != ""), "")
+        trial_rows.append(
+            {
+                "task_id": task_id,
+                "trial_id": trial_id,
+                "reset_id": int(values[0]["reset_id"]),
+                "success": success,
+                "pairing_transition": pairing.get((task_id, trial_id), ""),
+                "num_action_calls": len(values),
+                "mean_residual_l2": mean("sample_l2_mean"),
+                "max_residual_l2": max(float(row["sample_l2_max"]) for row in values),
+                "mean_policy_residual_l2": mean("mean_l2_mean"),
+                "max_policy_residual_l2": max(
+                    float(row["mean_l2_max"]) for row in values
+                ),
+                "sample_saturation_fraction": mean(
+                    "sample_saturation_fraction_gt_0.09"
+                ),
+                "mean_saturation_fraction": mean("mean_saturation_fraction_gt_0.09"),
+                "raw_sample_pressure_fraction": mean(
+                    "raw_sample_pressure_fraction_gt_1.472"
+                ),
+                "raw_mean_pressure_fraction": mean(
+                    "raw_mean_pressure_fraction_gt_1.472"
+                ),
+                "translation_abs_mean": mean("translation_abs_mean"),
+                "rotation_abs_mean": mean("rotation_abs_mean"),
+                "gripper_abs_mean": mean("gripper_abs_mean"),
+                "residual_to_base_ratio": mean("residual_to_base_l2_ratio"),
+                "max_mean_residual_abs": max(
+                    float(row["mean_abs_max"]) for row in values
+                ),
+                "dominant_dimension": max_pressure_row["dominant_dimension"],
+                "dominant_horizon": max_pressure_row["dominant_horizon"],
+            }
+        )
+    return trial_rows
+
+
+def high_pressure_trials(
+    trial_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Select trials whose deterministic correction pushes against the bound."""
+    selected = []
+    for row in trial_rows:
+        if not (
+            float(row["mean_saturation_fraction"]) > 0.10
+            or float(row["max_mean_residual_abs"]) > 0.095
+        ):
+            continue
+        selected.append(
+            {
+                "task_id": row["task_id"],
+                "trial_id": row["trial_id"],
+                "reset_id": row["reset_id"],
+                "success": row["success"],
+                "transition": row["pairing_transition"],
+                "mean_saturation_fraction": row["mean_saturation_fraction"],
+                "max_mean_residual_abs": row["max_mean_residual_abs"],
+                "dominant_dimension": row["dominant_dimension"],
+                "dominant_horizon": row["dominant_horizon"],
+            }
+        )
+    return selected
+
+
 def describe(values: np.ndarray) -> dict[str, float | int]:
     values = np.asarray(values, dtype=np.float64).reshape(-1)
     return {
@@ -177,6 +322,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnostic-dir", type=Path, required=True)
     parser.add_argument("--trials-csv", type=Path)
+    parser.add_argument("--pairing-csv", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser.parse_args()
 
@@ -185,12 +331,26 @@ def main() -> None:
     args = parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     outcomes = read_outcomes(args.trials_csv)
+    pairing = read_pairing(args.pairing_csv)
     rows, arrays = scalar_rows(args.diagnostic_dir, outcomes)
     write_csv(args.output_dir / "step_records.csv", rows)
+    trial_rows = aggregate_trials(rows, pairing)
+    write_csv(args.output_dir / "per_trial_residual.csv", trial_rows)
+    pressure_rows = high_pressure_trials(trial_rows)
+    if pressure_rows:
+        write_csv(args.output_dir / "high_pressure_trials.csv", pressure_rows)
+    else:
+        (args.output_dir / "high_pressure_trials.csv").write_text(
+            "task_id,trial_id,reset_id,success,transition,mean_saturation_fraction,"
+            "max_mean_residual_abs,dominant_dimension,dominant_horizon\n",
+            encoding="utf-8",
+        )
 
     residual = arrays["sample"]
     mean_action = arrays["mean"]
     exploration_action = arrays["exploration"]
+    raw_sample = arrays["raw_sample"]
+    raw_mean = arrays["raw_mean"]
     log_std = arrays["log_std"]
     base_action = arrays["base"]
     executed_action = arrays["executed"]
@@ -215,7 +375,16 @@ def main() -> None:
                     for k, v in describe(exploration_horizon_norm[:, horizon]).items()
                 },
                 "sample_saturation_fraction_gt_0.09": float(
-                    (np.abs(residual[:, horizon]) > 0.09).mean()
+                    (np.abs(residual[:, horizon]) > SATURATION_THRESHOLD).mean()
+                ),
+                "mean_saturation_fraction_gt_0.09": float(
+                    (np.abs(mean_action[:, horizon]) > SATURATION_THRESHOLD).mean()
+                ),
+                "raw_sample_pressure_fraction_gt_1.472": float(
+                    (np.abs(raw_sample[:, horizon]) > RAW_PRESSURE_THRESHOLD).mean()
+                ),
+                "raw_mean_pressure_fraction_gt_1.472": float(
+                    (np.abs(raw_mean[:, horizon]) > RAW_PRESSURE_THRESHOLD).mean()
                 ),
             }
         )
@@ -241,7 +410,16 @@ def main() -> None:
                     for k, v in describe(np.abs(mean_action[..., dimension])).items()
                 },
                 "sample_saturation_fraction_gt_0.09": float(
-                    (np.abs(residual[..., dimension]) > 0.09).mean()
+                    (np.abs(residual[..., dimension]) > SATURATION_THRESHOLD).mean()
+                ),
+                "mean_saturation_fraction_gt_0.09": float(
+                    (np.abs(mean_action[..., dimension]) > SATURATION_THRESHOLD).mean()
+                ),
+                "raw_sample_pressure_fraction_gt_1.472": float(
+                    (np.abs(raw_sample[..., dimension]) > RAW_PRESSURE_THRESHOLD).mean()
+                ),
+                "raw_mean_pressure_fraction_gt_1.472": float(
+                    (np.abs(raw_mean[..., dimension]) > RAW_PRESSURE_THRESHOLD).mean()
                 ),
                 "log_std_mean": float(log_std[..., dimension].mean()),
                 "std_mean": float(np.exp(log_std[..., dimension]).mean()),
@@ -280,6 +458,39 @@ def main() -> None:
     if conditioned_rows:
         write_csv(args.output_dir / "success_conditioned.csv", conditioned_rows)
 
+    transition_groups: dict[str, list[dict[str, object]]] = defaultdict(list)
+    for row in trial_rows:
+        if row["pairing_transition"]:
+            transition_groups[str(row["pairing_transition"])].append(row)
+    transition_rows = []
+    for transition, values in sorted(transition_groups.items()):
+        transition_rows.append(
+            {
+                "transition": transition,
+                "num_trials": len(values),
+                "mean_saturation_fraction": float(
+                    np.mean([row["mean_saturation_fraction"] for row in values])
+                ),
+                "sample_saturation_fraction": float(
+                    np.mean([row["sample_saturation_fraction"] for row in values])
+                ),
+                "raw_mean_pressure_fraction": float(
+                    np.mean([row["raw_mean_pressure_fraction"] for row in values])
+                ),
+                "raw_sample_pressure_fraction": float(
+                    np.mean([row["raw_sample_pressure_fraction"] for row in values])
+                ),
+                "max_mean_residual_abs": max(
+                    float(row["max_mean_residual_abs"]) for row in values
+                ),
+                "residual_to_base_ratio": float(
+                    np.mean([row["residual_to_base_ratio"] for row in values])
+                ),
+            }
+        )
+    if transition_rows:
+        write_csv(args.output_dir / "transition_conditioned.csv", transition_rows)
+
     summary = {
         "num_diagnostic_samples": int(residual.shape[0]),
         "action_horizon": int(residual.shape[1]),
@@ -288,11 +499,27 @@ def main() -> None:
         "mean_residual_l2": describe(mean_horizon_norm),
         "exploration_residual_l2": describe(exploration_horizon_norm),
         "sample_residual_abs": describe(np.abs(residual)),
+        "mean_residual_abs": describe(np.abs(mean_action)),
+        "raw_sample_abs": describe(np.abs(raw_sample)),
+        "raw_mean_abs": describe(np.abs(raw_mean)),
         "log_std": describe(log_std),
         "std": describe(np.exp(log_std)),
         "sample_active_fraction_gt_0.01": float((horizon_norm > 0.01).mean()),
         "sample_active_fraction_gt_0.05": float((horizon_norm > 0.05).mean()),
-        "sample_saturation_fraction_gt_0.09": float((np.abs(residual) > 0.09).mean()),
+        "sample_saturation_fraction_gt_0.09": float(
+            (np.abs(residual) > SATURATION_THRESHOLD).mean()
+        ),
+        "mean_saturation_fraction_gt_0.09": float(
+            (np.abs(mean_action) > SATURATION_THRESHOLD).mean()
+        ),
+        "raw_sample_pressure_fraction_gt_1.472": float(
+            (np.abs(raw_sample) > RAW_PRESSURE_THRESHOLD).mean()
+        ),
+        "raw_mean_pressure_fraction_gt_1.472": float(
+            (np.abs(raw_mean) > RAW_PRESSURE_THRESHOLD).mean()
+        ),
+        "num_trials": len(trial_rows),
+        "num_high_pressure_trials": len(pressure_rows),
         "base_normalized_ood_fraction": float((np.abs(base_action) > 1.0).mean()),
         "executed_normalized_ood_fraction": float(
             (np.abs(executed_action) > 1.0).mean()

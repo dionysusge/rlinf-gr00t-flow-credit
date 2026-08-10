@@ -19,8 +19,11 @@ training and fixed-reset evaluation pipeline.
 
 The current experiment is documented in
 [`docs/RESIDUAL_PPO_PLAN.md`](docs/RESIDUAL_PPO_PLAN.md). It starts with an exact
-zero-residual fixed500 check, then trains one bounded residual actor and records
-paired rescue/harm outcomes plus per-dimension and per-horizon corrections.
-The first run also records Set-A repeatability, residual mean versus exploration,
-saturation/OOD diagnostics, a pre-registered Set-A selection rule, B--E held-out
-results and a paired Full-PPO step600 reference.
+zero-residual fixed500 check, then trains one bounded, action-conditioned
+correction actor. The actor receives pooled VLM features, state features and the
+full normalized GR00T action proposal; it executes
+`a_GR00T + 0.1 * tanh(raw_correction)` without activating the sum again. The
+pipeline records paired rescue/harm outcomes, per-dimension and per-horizon
+corrections, sample/mean saturation, raw constraint pressure and trial-level
+high-pressure cases. It also records Set-A repeatability, a pre-registered Set-A
+selection rule, B--E held-out results and a paired Full-PPO step600 reference.

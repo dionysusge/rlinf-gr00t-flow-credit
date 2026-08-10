@@ -43,6 +43,8 @@ from rlinf.hybrid_engines.weight_syncer import WeightSyncer
 from rlinf.models import get_model
 from rlinf.models.embodiment.base_policy import ForwardType
 from rlinf.models.embodiment.gr00t.residual_policy import (
+    RAW_PRESSURE_THRESHOLD,
+    summarize_constraint_pressure,
     summarize_residual_actions,
     summarize_residual_log_std,
 )
@@ -1290,6 +1292,25 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                         dimension_names=dimension_names,
                         metric_prefix="residual/mean",
                         saturation_threshold=0.09,
+                    )
+                )
+            raw_actions = forward_inputs.get("residual_raw_action")
+            if raw_actions is not None:
+                rollout_metrics.update(
+                    summarize_constraint_pressure(
+                        raw_actions,
+                        threshold=RAW_PRESSURE_THRESHOLD,
+                        dimension_names=dimension_names,
+                    )
+                )
+            raw_mean = forward_inputs.get("residual_raw_mean")
+            if raw_mean is not None:
+                rollout_metrics.update(
+                    summarize_constraint_pressure(
+                        raw_mean,
+                        threshold=RAW_PRESSURE_THRESHOLD,
+                        dimension_names=dimension_names,
+                        metric_prefix="residual/raw_mean",
                     )
                 )
             exploration_actions = forward_inputs.get("residual_exploration_action")

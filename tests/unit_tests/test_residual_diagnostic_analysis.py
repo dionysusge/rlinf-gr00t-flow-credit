@@ -31,16 +31,23 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
-def test_diagnostic_analysis_separates_mean_exploration_and_ood(tmp_path: Path) -> None:
+def test_diagnostic_analysis_separates_mean_exploration_and_ood(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     diagnostic_dir = tmp_path / "diagnostics"
     diagnostic_dir.mkdir()
     residual = np.full((1, 2, 3), 0.095, dtype=np.float32)
     mean = np.full((1, 2, 3), 0.05, dtype=np.float32)
+    raw_sample = np.full((1, 2, 3), 1.6, dtype=np.float32)
+    raw_mean = np.full((1, 2, 3), 1.0, dtype=np.float32)
     base = np.full((1, 2, 3), 0.98, dtype=np.float32)
     executed = base + residual
     np.savez_compressed(
         diagnostic_dir / "residual_000000_pid123.npz",
         residual_action=residual,
+        residual_raw_action=raw_sample,
+        residual_mean=raw_mean,
         residual_mean_action=mean,
         residual_exploration_action=residual - mean,
         residual_log_std=np.full((1, 2, 3), -2.5, dtype=np.float32),
@@ -56,6 +63,81 @@ def test_diagnostic_analysis_separates_mean_exploration_and_ood(tmp_path: Path) 
 
     assert rows[0]["success"] == 1
     assert rows[0]["sample_saturation_fraction_gt_0.09"] == 1.0
+    assert rows[0]["mean_saturation_fraction_gt_0.09"] == 0.0
+    assert rows[0]["raw_sample_pressure_fraction_gt_1.472"] == 1.0
+    assert rows[0]["raw_mean_pressure_fraction_gt_1.472"] == 0.0
     assert rows[0]["created_normalized_ood_fraction"] == 1.0
     assert rows[0]["mean_l2_mean"] == pytest.approx(np.sqrt(3) * 0.05)
     assert np.allclose(arrays["exploration"], residual - mean)
+    assert np.allclose(arrays["raw_sample"], raw_sample)
+    assert np.allclose(arrays["raw_mean"], raw_mean)
+
+    trials = MODULE.aggregate_trials(rows, {(0, 1): "rescue"})
+    assert trials[0]["pairing_transition"] == "rescue"
+    assert trials[0]["sample_saturation_fraction"] == 1.0
+    assert trials[0]["raw_sample_pressure_fraction"] == 1.0
+
+    trials_csv = tmp_path / "trials.csv"
+    trials_csv.write_text(
+        "task_id,trial_id,reset_id,success\n0,1,42,1\n",
+        encoding="utf-8",
+    )
+    pairing_csv = tmp_path / "pairing.csv"
+    pairing_csv.write_text(
+        "task_id,trial_id,transition\n0,1,rescue\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "analysis"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            str(SCRIPT),
+            "--diagnostic-dir",
+            str(diagnostic_dir),
+            "--trials-csv",
+            str(trials_csv),
+            "--pairing-csv",
+            str(pairing_csv),
+            "--output-dir",
+            str(output_dir),
+        ],
+    )
+
+    MODULE.main()
+
+    assert (output_dir / "per_trial_residual.csv").is_file()
+    assert (output_dir / "high_pressure_trials.csv").is_file()
+    assert (output_dir / "transition_conditioned.csv").is_file()
+    assert "rescue" in (output_dir / "per_trial_residual.csv").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_high_pressure_trial_selection() -> None:
+    trial = {
+        "task_id": 3,
+        "trial_id": 27,
+        "reset_id": 42,
+        "success": 0,
+        "pairing_transition": "unresolved",
+        "mean_saturation_fraction": 0.11,
+        "max_mean_residual_abs": 0.096,
+        "dominant_dimension": "drx",
+        "dominant_horizon": 0,
+    }
+
+    selected = MODULE.high_pressure_trials([trial])
+
+    assert selected == [
+        {
+            "task_id": 3,
+            "trial_id": 27,
+            "reset_id": 42,
+            "success": 0,
+            "transition": "unresolved",
+            "mean_saturation_fraction": 0.11,
+            "max_mean_residual_abs": 0.096,
+            "dominant_dimension": "drx",
+            "dominant_horizon": 0,
+        }
+    ]

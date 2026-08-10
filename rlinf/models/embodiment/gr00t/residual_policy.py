@@ -16,11 +16,14 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
 from torch import nn
 from torch.distributions import Normal
+
+RAW_PRESSURE_THRESHOLD = math.atanh(0.9)
 
 
 @dataclass(frozen=True)
@@ -38,7 +41,7 @@ class ResidualPolicyOutput:
 
 
 class GaussianResidualActor(nn.Module):
-    """Predict a bounded Gaussian residual action chunk from frozen VLA features.
+    """Predict an action-conditioned correction to a frozen VLA proposal.
 
     The Gaussian is defined in an unconstrained raw space. The environment-facing
     normalized correction is ``bound * scale * tanh(raw_action)``. PPO evaluates
@@ -76,7 +79,9 @@ class GaussianResidualActor(nn.Module):
         self.min_log_std = float(min_log_std)
         self.max_log_std = float(max_log_std)
 
-        input_width = self.vlm_width + self.state_width
+        input_width = (
+            self.vlm_width + self.state_width + self.action_horizon * self.action_dim
+        )
         layers: list[nn.Module] = [
             nn.LayerNorm(input_width),
             nn.Linear(input_width, hidden_width),
@@ -111,6 +116,7 @@ class GaussianResidualActor(nn.Module):
         self,
         vlm_features: torch.Tensor,
         state_features: torch.Tensor,
+        base_action: torch.Tensor,
     ) -> torch.Tensor:
         if vlm_features.ndim != 3:
             raise ValueError(
@@ -124,6 +130,32 @@ class GaussianResidualActor(nn.Module):
             )
         vlm_pooled = vlm_features.mean(dim=1)
         state_flat = state_features.reshape(state_features.shape[0], -1)
+        if base_action.ndim != 3:
+            raise ValueError(
+                "base_action must have shape [batch, action_horizon, action_dim], got "
+                f"{tuple(base_action.shape)}"
+            )
+        expected_action_shape = (self.action_horizon, self.action_dim)
+        if tuple(base_action.shape[-2:]) != expected_action_shape:
+            raise ValueError(
+                "Expected base_action trailing shape "
+                f"{expected_action_shape}, got {tuple(base_action.shape[-2:])}"
+            )
+        if not (vlm_pooled.shape[0] == state_flat.shape[0] == base_action.shape[0]):
+            raise ValueError(
+                "VLM, state, and base_action batch sizes must match, got "
+                f"{vlm_pooled.shape[0]}, {state_flat.shape[0]}, and "
+                f"{base_action.shape[0]}"
+            )
+        # GR00T proposals are produced under inference_mode. Clone them into a
+        # regular tensor so autograd can save this input for residual-head
+        # parameter gradients, while keeping the frozen base path detached.
+        base_action_flat = (
+            base_action.detach().clone().reshape(base_action.shape[0], -1)
+        )
+        base_action_flat = base_action_flat.to(
+            device=vlm_pooled.device, dtype=vlm_pooled.dtype
+        )
         if vlm_pooled.shape[-1] != self.vlm_width:
             raise ValueError(
                 f"Expected VLM width {self.vlm_width}, got {vlm_pooled.shape[-1]}"
@@ -132,15 +164,16 @@ class GaussianResidualActor(nn.Module):
             raise ValueError(
                 f"Expected state width {self.state_width}, got {state_flat.shape[-1]}"
             )
-        return torch.cat((vlm_pooled, state_flat), dim=-1)
+        return torch.cat((vlm_pooled, state_flat, base_action_flat), dim=-1)
 
     def distribution(
         self,
         vlm_features: torch.Tensor,
         state_features: torch.Tensor,
+        base_action: torch.Tensor,
     ) -> tuple[Normal, torch.Tensor, torch.Tensor]:
         """Return the raw-space Gaussian, mean and clamped log standard deviation."""
-        features = self._features(vlm_features, state_features)
+        features = self._features(vlm_features, state_features, base_action)
         hidden = self.trunk(features)
         mean = self.mean_head(hidden).reshape(
             features.shape[0],
@@ -155,13 +188,18 @@ class GaussianResidualActor(nn.Module):
         self,
         vlm_features: torch.Tensor,
         state_features: torch.Tensor,
+        base_action: torch.Tensor,
         *,
         deterministic: bool,
         force_zero: bool = False,
         scale: float = 1.0,
     ) -> ResidualPolicyOutput:
         """Sample a raw residual and map it into bounded normalized action space."""
-        distribution, mean, log_std = self.distribution(vlm_features, state_features)
+        distribution, mean, log_std = self.distribution(
+            vlm_features,
+            state_features,
+            base_action,
+        )
         if force_zero:
             raw_action = torch.zeros_like(mean)
             action = torch.zeros_like(mean)
@@ -185,10 +223,15 @@ class GaussianResidualActor(nn.Module):
         self,
         vlm_features: torch.Tensor,
         state_features: torch.Tensor,
+        base_action: torch.Tensor,
         raw_actions: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Evaluate recorded raw samples for PPO training."""
-        distribution, _, _ = self.distribution(vlm_features, state_features)
+        distribution, _, _ = self.distribution(
+            vlm_features,
+            state_features,
+            base_action,
+        )
         return distribution.log_prob(raw_actions), distribution.entropy()
 
 
@@ -251,6 +294,45 @@ def summarize_residual_actions(
             metrics[
                 f"{metric_prefix}/horizon/{idx:02d}_saturation_fraction_gt_{threshold_label}"
             ] = float(saturated[:, idx].float().mean().item())
+    return metrics
+
+
+def summarize_constraint_pressure(
+    raw_actions: torch.Tensor,
+    *,
+    threshold: float,
+    dimension_names: tuple[str, ...] | None = None,
+    metric_prefix: str = "residual/raw_sample",
+) -> dict[str, float]:
+    """Summarize how often an unconstrained policy tries to exceed its budget."""
+    if raw_actions.ndim < 3:
+        raise ValueError(
+            "raw_actions must end in [horizon, action_dim], got "
+            f"{tuple(raw_actions.shape)}"
+        )
+    values = raw_actions.detach().float()
+    horizon, action_dim = values.shape[-2:]
+    flat = values.reshape(-1, horizon, action_dim)
+    pressure = flat.abs() > float(threshold)
+    names = dimension_names or tuple(f"dim_{idx}" for idx in range(action_dim))
+    if len(names) != action_dim:
+        raise ValueError(
+            f"Expected {action_dim} dimension names, received {len(names)}"
+        )
+    threshold_label = f"{threshold:.4g}"
+    metrics = {
+        f"{metric_prefix}/pressure_fraction_gt_{threshold_label}": float(
+            pressure.float().mean().item()
+        )
+    }
+    for idx, name in enumerate(names):
+        metrics[
+            f"{metric_prefix}/dimension/{name}_pressure_fraction_gt_{threshold_label}"
+        ] = float(pressure[..., idx].float().mean().item())
+    for idx in range(horizon):
+        metrics[
+            f"{metric_prefix}/horizon/{idx:02d}_pressure_fraction_gt_{threshold_label}"
+        ] = float(pressure[:, idx].float().mean().item())
     return metrics
 
 

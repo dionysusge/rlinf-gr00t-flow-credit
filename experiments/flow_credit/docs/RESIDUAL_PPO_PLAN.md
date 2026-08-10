@@ -2,9 +2,20 @@
 
 ## Research question
 
-Test whether a frozen GR00T N1.7 policy can be improved by a small Gaussian
-residual actor with less destructive drift than full Flow-SDE PPO. The first
-round answers only:
+Test whether a frozen GR00T N1.7 policy can be improved by an
+action-conditioned Gaussian correction policy with less destructive drift than
+full Flow-SDE PPO. The correction explicitly sees the complete normalized
+GR00T proposal:
+
+```text
+u = f(mean_pool(h_VLM), h_state, vec(a_GR00T[1:16, 1:7]))
+delta_a = 0.1 * tanh(u)
+a_exec = a_GR00T + delta_a
+```
+
+There is no second activation on `a_exec`. The bound is a diagnostic trust
+region in normalized correction space, not a representational requirement.
+The first round answers only:
 
 1. Can Residual PPO improve fixed-reset LIBERO-Spatial success?
 2. Does it avoid the intermediate collapse observed in full PPO?
@@ -17,12 +28,15 @@ round answers only:
 - Hardware: physical H200 GPUs 0 and 1.
 - Action horizon: 16; flow steps: 4.
 - Residual: normalized-action bound 0.1, two-layer 512-width MLP,
-  `log_std=-2.5`, zero-initialized mean head.
+  `log_std=-2.5`, zero-initialized mean head. Its input is pooled VLM features,
+  state features and the flattened normalized 16x7 GR00T action chunk.
 - PPO: clip 0.2, gamma 0.99, GAE lambda 0.95, actor/critic LR 1e-4.
 - Trainable modules: residual actor and value head only. GR00T, its VLM and
   flow action head remain frozen and in eval mode.
 
-The old/new PPO ratio is computed only from the residual raw Gaussian sample.
+The old/new PPO ratio is computed only from the residual raw Gaussian sample,
+conditioned on the exact GR00T proposal cached during rollout. PPO updates must
+never recompute or omit that proposal when evaluating the recorded sample.
 No Flow-SDE log-probability participates in the Residual PPO loss, and external
 action noise is disabled.
 
@@ -70,7 +84,8 @@ logs include cumulative transitions, completed episodes, residual L2/quantiles,
 active fractions, each action dimension, each of 16 chunk horizons, and the
 residual/base norm ratio. They also separate sampled correction, deterministic
 policy-mean correction and exploration correction; record Gaussian `log_std`,
-0.09 saturation fractions, normalized-action OOD fractions, PPO ratio
+sample and policy-mean 0.09 saturation fractions, raw sample and raw mean
+constraint pressure above `atanh(0.9)=1.472`, normalized-action OOD fractions, PPO ratio
 mean/p95/max, clip fraction, approximate KL, actor/critic losses, gradient norm
 and advantage standard deviation. All curves use
 `progress/environment_transitions`, with `progress/global_step` aligned to
@@ -91,7 +106,10 @@ For every checkpoint this produces:
 - `metrics.json`, `trials.csv`, `trials.jsonl`;
 - preserve/rescue/harm/unresolved pairing and exact McNemar test;
 - default-on raw residual NPZ shards and step, dimension, horizon,
-  mean/noise, saturation, OOD and success-conditioned analysis;
+  mean/noise, sample/mean saturation, raw constraint pressure, OOD and
+  success-conditioned analysis;
+- `per_trial_residual.csv`, `high_pressure_trials.csv`, and
+  `transition_conditioned.csv`, joined to preserve/rescue/harm/unresolved;
 - `checkpoint_summary.csv` indexed by both optimizer step and environment
   transitions;
 - `checkpoint_selection_ranking.csv`, `selection.json` and
@@ -102,6 +120,12 @@ fewer harms, then shorter episode length, then the earlier checkpoint. Set A is
 development-only. Do not delete raw diagnostic NPZ files before analysis is
 complete. Set `DUMP_RESIDUAL_DIAGNOSTICS=0` only for a deliberate low-storage
 rerun.
+
+`high_pressure_trials.csv` selects trials with deterministic mean saturation
+above 10% or a maximum absolute mean correction above 0.095. These are the
+cases to inspect before considering a 0.2 bound. Per-dimension and per-horizon
+pressure distinguish a global radius limitation from rotation/gripper-specific
+or short-horizon correction structure.
 
 ## E2: residual strength curve
 
