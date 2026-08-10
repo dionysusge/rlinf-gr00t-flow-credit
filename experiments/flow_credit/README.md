@@ -21,3 +21,6 @@ The current experiment is documented in
 [`docs/RESIDUAL_PPO_PLAN.md`](docs/RESIDUAL_PPO_PLAN.md). It starts with an exact
 zero-residual fixed500 check, then trains one bounded residual actor and records
 paired rescue/harm outcomes plus per-dimension and per-horizon corrections.
+The first run also records Set-A repeatability, residual mean versus exploration,
+saturation/OOD diagnostics, a pre-registered Set-A selection rule, B--E held-out
+results and a paired Full-PPO step600 reference.

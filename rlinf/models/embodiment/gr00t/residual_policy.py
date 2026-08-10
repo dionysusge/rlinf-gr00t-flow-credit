@@ -33,6 +33,8 @@ class ResidualPolicyOutput:
     entropy: torch.Tensor
     mean: torch.Tensor
     log_std: torch.Tensor
+    mean_action: torch.Tensor
+    exploration_action: torch.Tensor
 
 
 class GaussianResidualActor(nn.Module):
@@ -163,9 +165,11 @@ class GaussianResidualActor(nn.Module):
         if force_zero:
             raw_action = torch.zeros_like(mean)
             action = torch.zeros_like(mean)
+            mean_action = torch.zeros_like(mean)
         else:
             raw_action = mean if deterministic else distribution.sample()
             action = self.residual_bound * float(scale) * torch.tanh(raw_action)
+            mean_action = self.residual_bound * float(scale) * torch.tanh(mean)
         return ResidualPolicyOutput(
             raw_action=raw_action,
             action=action,
@@ -173,6 +177,8 @@ class GaussianResidualActor(nn.Module):
             entropy=distribution.entropy(),
             mean=mean,
             log_std=log_std,
+            mean_action=mean_action,
+            exploration_action=action - mean_action,
         )
 
     def evaluate_actions(
@@ -190,6 +196,8 @@ def summarize_residual_actions(
     residual_actions: torch.Tensor,
     *,
     dimension_names: tuple[str, ...] | None = None,
+    metric_prefix: str = "residual",
+    saturation_threshold: float | None = None,
 ) -> dict[str, float]:
     """Create scalar diagnostics for bounded normalized residual chunks."""
     if residual_actions.ndim < 3:
@@ -204,12 +212,16 @@ def summarize_residual_actions(
     step_norm = torch.linalg.vector_norm(flat, dim=-1)
 
     metrics = {
-        "residual/l2_mean": float(step_norm.mean().item()),
-        "residual/l2_max": float(step_norm.max().item()),
-        "residual/l2_p95": float(torch.quantile(step_norm, 0.95).item()),
-        "residual/abs_mean": float(flat.abs().mean().item()),
-        "residual/active_fraction_gt_0.01": float((step_norm > 0.01).float().mean()),
-        "residual/active_fraction_gt_0.05": float((step_norm > 0.05).float().mean()),
+        f"{metric_prefix}/l2_mean": float(step_norm.mean().item()),
+        f"{metric_prefix}/l2_max": float(step_norm.max().item()),
+        f"{metric_prefix}/l2_p95": float(torch.quantile(step_norm, 0.95).item()),
+        f"{metric_prefix}/abs_mean": float(flat.abs().mean().item()),
+        f"{metric_prefix}/active_fraction_gt_0.01": float(
+            (step_norm > 0.01).float().mean()
+        ),
+        f"{metric_prefix}/active_fraction_gt_0.05": float(
+            (step_norm > 0.05).float().mean()
+        ),
     }
 
     names = dimension_names or tuple(f"dim_{idx}" for idx in range(action_dim))
@@ -218,11 +230,61 @@ def summarize_residual_actions(
             f"Expected {action_dim} dimension names, received {len(names)}"
         )
     for idx, name in enumerate(names):
-        metrics[f"residual/dimension/{name}_abs_mean"] = float(
+        metrics[f"{metric_prefix}/dimension/{name}_abs_mean"] = float(
             flat[..., idx].abs().mean().item()
         )
     for idx in range(horizon):
-        metrics[f"residual/horizon/{idx:02d}_l2_mean"] = float(
+        metrics[f"{metric_prefix}/horizon/{idx:02d}_l2_mean"] = float(
             step_norm[:, idx].mean().item()
+        )
+    if saturation_threshold is not None:
+        threshold_label = f"{saturation_threshold:.3g}"
+        saturated = flat.abs() > saturation_threshold
+        metrics[f"{metric_prefix}/saturation_fraction_gt_{threshold_label}"] = float(
+            saturated.float().mean().item()
+        )
+        for idx, name in enumerate(names):
+            metrics[
+                f"{metric_prefix}/dimension/{name}_saturation_fraction_gt_{threshold_label}"
+            ] = float(saturated[..., idx].float().mean().item())
+        for idx in range(horizon):
+            metrics[
+                f"{metric_prefix}/horizon/{idx:02d}_saturation_fraction_gt_{threshold_label}"
+            ] = float(saturated[:, idx].float().mean().item())
+    return metrics
+
+
+def summarize_residual_log_std(
+    log_std: torch.Tensor,
+    *,
+    dimension_names: tuple[str, ...] | None = None,
+    metric_prefix: str = "residual",
+) -> dict[str, float]:
+    """Summarize Gaussian exploration scale over action dimensions and horizons."""
+    if log_std.ndim < 3:
+        raise ValueError(
+            f"log_std must end in [horizon, action_dim], got {tuple(log_std.shape)}"
+        )
+    values = log_std.detach().float().reshape(-1, *log_std.shape[-2:])
+    horizon, action_dim = values.shape[-2:]
+    names = dimension_names or tuple(f"dim_{idx}" for idx in range(action_dim))
+    if len(names) != action_dim:
+        raise ValueError(
+            f"Expected {action_dim} dimension names, received {len(names)}"
+        )
+    metrics = {
+        f"{metric_prefix}/log_std_mean": float(values.mean().item()),
+        f"{metric_prefix}/log_std_p05": float(torch.quantile(values, 0.05).item()),
+        f"{metric_prefix}/log_std_p50": float(torch.quantile(values, 0.50).item()),
+        f"{metric_prefix}/log_std_p95": float(torch.quantile(values, 0.95).item()),
+        f"{metric_prefix}/std_mean": float(values.exp().mean().item()),
+    }
+    for idx, name in enumerate(names):
+        metrics[f"{metric_prefix}/dimension/{name}_log_std_mean"] = float(
+            values[..., idx].mean().item()
+        )
+    for idx in range(horizon):
+        metrics[f"{metric_prefix}/horizon/{idx:02d}_log_std_mean"] = float(
+            values[:, idx].mean().item()
         )
     return metrics

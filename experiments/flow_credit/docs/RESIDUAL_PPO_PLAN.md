@@ -49,6 +49,13 @@ The script evaluates all five 100-trial sets with `force_zero=true`, writes
 structured `trials.csv`/`trials.jsonl`, and creates `E0_PASS` only when all 500
 trials complete and success is exactly 444/500. Do not launch E1 if E0 fails.
 
+It also runs E0-R: an independent second Set-A evaluation and paired analysis
+against the first Set-A run. Inspect `E0_REPEATABILITY.json` and
+`setA_repeatability/`: `E0_REPEATABLE` means every one of the 100 success
+outcomes agreed. A mismatch creates `E0_REPEATABILITY_WARNING` but does not
+replace the primary 444/500 gate; it makes any later rescue/harm uncertainty
+explicit.
+
 ## E1: Residual-PPO-0.1
 
 ```bash
@@ -61,38 +68,81 @@ evaluates checkpoints near 123K, 246K, 369K, 492K and 614K transitions (steps
 30, 60, 90, 120 and 150). W&B/TensorBoard
 logs include cumulative transitions, completed episodes, residual L2/quantiles,
 active fractions, each action dimension, each of 16 chunk horizons, and the
-residual/base norm ratio.
+residual/base norm ratio. They also separate sampled correction, deterministic
+policy-mean correction and exploration correction; record Gaussian `log_std`,
+0.09 saturation fractions, normalized-action OOD fractions, PPO ratio
+mean/p95/max, clip fraction, approximate KL, actor/critic losses, gradient norm
+and advantage standard deviation. All curves use
+`progress/environment_transitions`, with `progress/global_step` aligned to
+checkpoint/evaluation names.
+
+Each run additionally writes `run_manifest.json` (host, GPU, versions, seeds,
+paths, branch/commit and command) and a fully expanded `resolved_config.yaml`.
 
 ## Set-A checkpoint sweep
 
 ```bash
 tmux new -s residual-sweep
-DUMP_RESIDUAL_DIAGNOSTICS=1 \
-  bash experiments/flow_credit/scripts/run_n17_residual_checkpoint_sweep_setA.sh
+bash experiments/flow_credit/scripts/run_n17_residual_checkpoint_sweep_setA.sh
 ```
 
 For every checkpoint this produces:
 
 - `metrics.json`, `trials.csv`, `trials.jsonl`;
 - preserve/rescue/harm/unresolved pairing and exact McNemar test;
-- optional step, dimension, horizon and success-conditioned residual analysis;
+- default-on raw residual NPZ shards and step, dimension, horizon,
+  mean/noise, saturation, OOD and success-conditioned analysis;
 - `checkpoint_summary.csv` indexed by both optimizer step and environment
-  transitions.
+  transitions;
+- `checkpoint_selection_ranking.csv`, `selection.json` and
+  `best_checkpoint.txt`.
 
-Choose the best checkpoint from Set A before running fixed500.
+Checkpoint selection is pre-registered: maximize Set-A success; on ties choose
+fewer harms, then shorter episode length, then the earlier checkpoint. Set A is
+development-only. Do not delete raw diagnostic NPZ files before analysis is
+complete. Set `DUMP_RESIDUAL_DIAGNOSTICS=0` only for a deliberate low-storage
+rerun.
 
 ## E2: residual strength curve
 
 ```bash
 tmux new -s residual-strength
-DUMP_RESIDUAL_DIAGNOSTICS=1 \
-  bash experiments/flow_credit/scripts/run_n17_residual_strength_curve_fixed500.sh \
+bash experiments/flow_credit/scripts/run_n17_residual_strength_curve_fixed500.sh \
   /absolute/path/to/checkpoints/global_step_N
 ```
 
 This reuses one trained actor and evaluates lambda 0, 0.25, 0.5 and 1.0 over
 the complete fixed 500 trials. It writes `strength_curve.csv` plus paired
-rescue/harm/McNemar artifacts for every lambda.
+rescue/harm/McNemar artifacts for every lambda. `heldout_BtoE/` and
+`heldout_BtoE_pairing/` are the primary 400-trial held-out result; all-500
+`aggregate/` and `pairing/` remain a descriptive aggregate because Set A was
+used for checkpoint selection.
+
+## Full PPO step600 paired baseline
+
+After E0, re-evaluate the already-trained Full PPO step600 checkpoint on the
+same fixed resets. This requires no retraining and distinguishes net gain from
+destructive policy reshuffling:
+
+```bash
+tmux new -s fullppo-fixed500
+bash experiments/flow_credit/scripts/run_n17_fullppo_step600_fixed500.sh \
+  /absolute/path/to/full_ppo/checkpoints/global_step_600
+```
+
+The script produces all-500 and held-out B--E fixed evaluations, each paired to
+E0 with preserve/rescue/harm/unresolved and exact McNemar statistics.
+
+## Reporting protocol
+
+- Development and checkpoint selection: Set A (100 trials).
+- Primary held-out result: Sets B--E (400 trials).
+- Descriptive aggregate: Sets A--E (500 trials).
+
+Report success together with rescue, harm, net rescue and per-task pairing. Do
+not interpret a small normalized residual as a small physical correction until
+the best checkpoint has been re-dumped with decoded physical-space action
+statistics.
 
 ## Go / no-go
 

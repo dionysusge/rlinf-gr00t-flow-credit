@@ -638,6 +638,8 @@ class FlowMatchingActionHeadForRLActionPrediction(Gr00tN1d7ActionHead):
         return {
             "raw_action": policy_output.raw_action,
             "action": policy_output.action,
+            "mean_action": policy_output.mean_action,
+            "exploration_action": policy_output.exploration_action,
             "logprobs": policy_output.logprobs,
             "entropy": policy_output.entropy,
             "mean": policy_output.mean,
@@ -1510,6 +1512,8 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             "base_action": to_numpy(diagnostic["base_action"]),
             "residual_raw_action": to_numpy(diagnostic["raw_action"]),
             "residual_action": to_numpy(diagnostic["action"]),
+            "residual_mean_action": to_numpy(diagnostic["mean_action"]),
+            "residual_exploration_action": to_numpy(diagnostic["exploration_action"]),
             "residual_mean": to_numpy(diagnostic["mean"]),
             "residual_log_std": to_numpy(diagnostic["log_std"]),
             "executed_normalized_action": to_numpy(normalized_action),
@@ -1664,7 +1668,11 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         forward_inputs = {
             "residual_raw_action": residual["raw_action"],
             "residual_action": residual["action"],
+            "residual_mean_action": residual["mean_action"],
+            "residual_exploration_action": residual["exploration_action"],
+            "residual_log_std": residual["log_std"],
             "base_action": base_action[:, :horizon, :action_dim],
+            "executed_normalized_action": action[:, :horizon, :action_dim],
             **stashed_forward_inputs,
         }
         result = {
@@ -1677,6 +1685,8 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
                 "action": residual["action"],
                 "mean": residual["mean"],
                 "log_std": residual["log_std"],
+                "mean_action": residual["mean_action"],
+                "exploration_action": residual["exploration_action"],
             },
         }
         return action, result

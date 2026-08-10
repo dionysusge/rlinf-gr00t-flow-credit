@@ -43,12 +43,13 @@ for lambda in "${LAMBDAS[@]}"; do
     lambda_root="$ROOT/lambda_$lambda_name"
     mkdir -p "$lambda_root"
     inputs=()
+    heldout_inputs=()
     for index in "${!SET_NAMES[@]}"; do
         set_name=${SET_NAMES[$index]}
         offset=${OFFSETS[$index]}
         output_dir="$lambda_root/$set_name"
         mkdir -p "$output_dir"
-        if [[ "${DUMP_RESIDUAL_DIAGNOSTICS:-0}" == "1" && "$lambda" == "1.0" ]]; then
+        if [[ "${DUMP_RESIDUAL_DIAGNOSTICS:-1}" == "1" && "$lambda" == "1.0" ]]; then
             export RESIDUAL_DIAG_DIR="$output_dir/residual_diagnostics"
         else
             unset RESIDUAL_DIAG_DIR 2>/dev/null || true
@@ -66,6 +67,9 @@ for lambda in "${LAMBDAS[@]}"; do
             2>&1 | tee "$output_dir/evaluation.log"
         ray stop --force >/dev/null 2>&1 || true
         inputs+=(--input "$set_name=$output_dir")
+        if [[ "$set_name" != "setA" ]]; then
+            heldout_inputs+=(--input "$set_name=$output_dir")
+        fi
     done
     python experiments/flow_credit/analysis/aggregate_fixed_trial_evaluations.py \
         "${inputs[@]}" --output-dir "$lambda_root/aggregate"
@@ -73,6 +77,12 @@ for lambda in "${LAMBDAS[@]}"; do
         --base "$E0_ROOT/aggregate/trials.csv" \
         --candidate "$lambda_root/aggregate/trials.csv" \
         --output-dir "$lambda_root/pairing"
+    python experiments/flow_credit/analysis/aggregate_fixed_trial_evaluations.py \
+        "${heldout_inputs[@]}" --output-dir "$lambda_root/heldout_BtoE"
+    python experiments/flow_credit/analysis/analyze_residual_pairing.py \
+        --base "$E0_ROOT/aggregate_heldout_BtoE/trials.csv" \
+        --candidate "$lambda_root/heldout_BtoE/trials.csv" \
+        --output-dir "$lambda_root/heldout_BtoE_pairing"
 done
 
 python - "$ROOT" <<'PY'
@@ -87,6 +97,12 @@ for directory in root.glob("lambda_*"):
     value = float(directory.name.removeprefix("lambda_").replace("p", "."))
     metrics = json.loads((directory / "aggregate" / "summary.json").read_text())
     pairing = json.loads((directory / "pairing" / "summary.json").read_text())
+    heldout_metrics = json.loads(
+        (directory / "heldout_BtoE" / "summary.json").read_text()
+    )
+    heldout_pairing = json.loads(
+        (directory / "heldout_BtoE_pairing" / "summary.json").read_text()
+    )
     rows.append({
         "lambda": value,
         "success_rate": metrics["success_rate"],
@@ -96,6 +112,13 @@ for directory in root.glob("lambda_*"):
         "harm": pairing["harm"],
         "net_rescue": pairing["net_rescue"],
         "mcnemar_exact_pvalue": pairing["mcnemar_exact_pvalue"],
+        "heldout_success_rate": heldout_metrics["success_rate"],
+        "heldout_reward": heldout_metrics["reward"],
+        "heldout_episode_length": heldout_metrics["episode_length"],
+        "heldout_rescue": heldout_pairing["rescue"],
+        "heldout_harm": heldout_pairing["harm"],
+        "heldout_net_rescue": heldout_pairing["net_rescue"],
+        "heldout_mcnemar_exact_pvalue": heldout_pairing["mcnemar_exact_pvalue"],
     })
 rows.sort(key=lambda row: row["lambda"])
 with (root / "strength_curve.csv").open("w", newline="") as handle:

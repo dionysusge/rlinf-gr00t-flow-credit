@@ -43,7 +43,7 @@ for step in "${STEPS[@]}"; do
     test -d "$checkpoint/actor"
     output_dir="$SWEEP_ROOT/step$step"
     mkdir -p "$output_dir"
-    if [[ "${DUMP_RESIDUAL_DIAGNOSTICS:-0}" == "1" ]]; then
+    if [[ "${DUMP_RESIDUAL_DIAGNOSTICS:-1}" == "1" ]]; then
         export RESIDUAL_DIAG_DIR="$output_dir/residual_diagnostics"
     else
         unset RESIDUAL_DIAG_DIR 2>/dev/null || true
@@ -72,13 +72,14 @@ for step in "${STEPS[@]}"; do
     ray stop --force >/dev/null 2>&1 || true
 done
 
-python - "$SWEEP_ROOT" <<'PY'
+python - "$SWEEP_ROOT" "$CKPT_ROOT" <<'PY'
 import csv
 import json
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+checkpoint_root = Path(sys.argv[2])
 rows = []
 for directory in sorted(root.glob("step*"), key=lambda path: int(path.name[4:])):
     metrics = json.loads((directory / "metrics.json").read_text())["metrics"]
@@ -98,7 +99,36 @@ with (root / "checkpoint_summary.csv").open("w", newline="") as handle:
     writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
     writer.writeheader()
     writer.writerows(rows)
-print(json.dumps(rows, indent=2))
+ranked = sorted(
+    rows,
+    key=lambda row: (
+        -row["success_rate"],
+        row["harm"],
+        row["episode_length"],
+        row["step"],
+    ),
+)
+for rank, row in enumerate(ranked, start=1):
+    row["selection_rank"] = rank
+with (root / "checkpoint_selection_ranking.csv").open("w", newline="") as handle:
+    writer = csv.DictWriter(handle, fieldnames=list(ranked[0]))
+    writer.writeheader()
+    writer.writerows(ranked)
+best = ranked[0]
+best_checkpoint = checkpoint_root / f"global_step_{best['step']}"
+selection = {
+    "criterion": [
+        "maximize Set-A success_rate",
+        "minimize harm",
+        "minimize episode_length",
+        "prefer earlier step",
+    ],
+    "best": best,
+    "best_checkpoint": str(best_checkpoint),
+}
+(root / "selection.json").write_text(json.dumps(selection, indent=2) + "\n")
+(root / "best_checkpoint.txt").write_text(str(best_checkpoint) + "\n")
+print(json.dumps({"rows": rows, "selection": selection}, indent=2))
 PY
 
 echo "N17_RESIDUAL_CHECKPOINT_SWEEP_SETA_COMPLETE"

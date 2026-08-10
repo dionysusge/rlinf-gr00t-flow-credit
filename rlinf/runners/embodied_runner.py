@@ -308,7 +308,7 @@ class EmbodiedRunner:
         training_metrics = [result.get("training_metrics", {}) for result in results]
         return rollout_metrics, training_metrics
 
-    def _maybe_eval_and_checkpoint(self, step: int) -> dict:
+    def _maybe_eval_and_checkpoint(self) -> dict:
         run_val, save_model, _ = check_progress(
             self.global_step,
             self.max_steps,
@@ -324,7 +324,7 @@ class EmbodiedRunner:
                 self.update_rollout_weights()
                 eval_metrics = self.evaluate()
                 eval_metrics = {f"eval/{k}": v for k, v in eval_metrics.items()}
-                self.metric_logger.log(data=eval_metrics, step=step)
+                self.metric_logger.log(data=eval_metrics, step=self.global_step)
 
         if save_model:
             self._save_checkpoint()
@@ -382,6 +382,7 @@ class EmbodiedRunner:
             * int(self.cfg.env.train.rollout_epoch)
         )
         progress_metrics = {
+            "progress/global_step": self.global_step,
             "progress/environment_transitions": self.global_step * transitions_per_step,
             "progress/episodes_this_step": episodes_this_step,
             "progress/episodes_since_start": self.completed_train_episodes,
@@ -462,7 +463,7 @@ class EmbodiedRunner:
         logging_metrics.update(progress_metrics)
 
         self.print_metrics_table_async(
-            step, self.max_steps, start_time, logging_metrics, start_step
+            step - 1, self.max_steps, start_time, logging_metrics, start_step
         )
 
     def _finish_run(self) -> None:
@@ -558,13 +559,13 @@ class EmbodiedRunner:
                     env_bootstrap_handle.wait()
 
                 self.global_step += 1
-                eval_metrics = self._maybe_eval_and_checkpoint(_step)
+                eval_metrics = self._maybe_eval_and_checkpoint()
 
             if profiled_step is not None:
                 self._close_profiling_window(profiled_step)
 
             self._log_step_metrics(
-                step=_step,
+                step=self.global_step,
                 start_time=start_time,
                 start_step=start_step,
                 env_handle=env_handle,
@@ -637,13 +638,13 @@ class EmbodiedRunner:
                     env_bootstrap_handle.wait()
 
                 self.global_step += 1
-                eval_metrics = self._maybe_eval_and_checkpoint(_step)
+                eval_metrics = self._maybe_eval_and_checkpoint()
 
             if profiled_step is not None:
                 self._close_profiling_window(profiled_step)
 
             self._log_step_metrics(
-                step=_step,
+                step=self.global_step,
                 start_time=start_time,
                 start_step=start_step,
                 env_handle=env_handle,

@@ -165,6 +165,28 @@ def compute_rollout_metrics(data_buffer: dict) -> dict:
             mask = torch.broadcast_to(mask, values.shape)
         return values[mask]
 
+    def reduce_std(values: torch.Tensor) -> float:
+        from rlinf.scheduler.worker.worker import Worker
+
+        device = Worker.torch_platform.current_device()
+        if values.numel() == 0:
+            moments = torch.zeros(3, device=device, dtype=torch.float64)
+        else:
+            values = values.to(device=device, dtype=torch.float64)
+            moments = torch.stack(
+                [
+                    values.sum(),
+                    values.square().sum(),
+                    torch.tensor(values.numel(), device=device, dtype=torch.float64),
+                ]
+            )
+        torch.distributed.all_reduce(moments, op=torch.distributed.ReduceOp.SUM)
+        total, total_squared, count = moments.tolist()
+        if count <= 0:
+            return float("nan")
+        variance = max(total_squared / count - (total / count) ** 2, 0.0)
+        return math.sqrt(variance)
+
     if "rewards" in data_buffer:
         rewards = data_buffer["rewards"]
         rewards = valid_values(rewards)
@@ -182,6 +204,7 @@ def compute_rollout_metrics(data_buffer: dict) -> dict:
 
         advantages_metrics = {
             "advantages_mean": mean_adv,
+            "advantages_std": reduce_std(advantages),
             "advantages_max": max_adv,
             "advantages_min": min_adv,
         }

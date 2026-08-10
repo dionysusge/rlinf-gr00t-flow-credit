@@ -44,6 +44,7 @@ from rlinf.models import get_model
 from rlinf.models.embodiment.base_policy import ForwardType
 from rlinf.models.embodiment.gr00t.residual_policy import (
     summarize_residual_actions,
+    summarize_residual_log_std,
 )
 from rlinf.scheduler import Channel, Cluster, Worker
 from rlinf.utils.data_iter_utils import (
@@ -1277,9 +1278,38 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 summarize_residual_actions(
                     residual_actions,
                     dimension_names=dimension_names,
+                    saturation_threshold=0.09,
                 )
             )
-            base_actions = self.rollout_batch["forward_inputs"].get("base_action")
+            forward_inputs = self.rollout_batch["forward_inputs"]
+            mean_actions = forward_inputs.get("residual_mean_action")
+            if mean_actions is not None:
+                rollout_metrics.update(
+                    summarize_residual_actions(
+                        mean_actions,
+                        dimension_names=dimension_names,
+                        metric_prefix="residual/mean",
+                        saturation_threshold=0.09,
+                    )
+                )
+            exploration_actions = forward_inputs.get("residual_exploration_action")
+            if exploration_actions is not None:
+                rollout_metrics.update(
+                    summarize_residual_actions(
+                        exploration_actions,
+                        dimension_names=dimension_names,
+                        metric_prefix="residual/exploration",
+                    )
+                )
+            log_std = forward_inputs.get("residual_log_std")
+            if log_std is not None:
+                rollout_metrics.update(
+                    summarize_residual_log_std(
+                        log_std,
+                        dimension_names=dimension_names,
+                    )
+                )
+            base_actions = forward_inputs.get("base_action")
             if base_actions is not None:
                 residual_norm = torch.linalg.vector_norm(
                     residual_actions.detach().float(), dim=-1
@@ -1290,6 +1320,21 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 rollout_metrics["residual/to_base_l2_ratio_mean"] = float(
                     (residual_norm / (base_norm + 1e-8)).mean().item()
                 )
+                executed_actions = forward_inputs.get("executed_normalized_action")
+                if executed_actions is not None:
+                    base_abs = base_actions.detach().float().abs()
+                    executed_abs = executed_actions.detach().float().abs()
+                    base_in_domain = base_abs <= 1.0
+                    executed_out_of_domain = executed_abs > 1.0
+                    rollout_metrics["residual/base_normalized_ood_fraction"] = float(
+                        (base_abs > 1.0).float().mean().item()
+                    )
+                    rollout_metrics["residual/executed_normalized_ood_fraction"] = (
+                        float(executed_out_of_domain.float().mean().item())
+                    )
+                    rollout_metrics["residual/created_normalized_ood_fraction"] = float(
+                        (base_in_domain & executed_out_of_domain).float().mean().item()
+                    )
         return rollout_metrics
 
     def _build_sft_data_loader(self):

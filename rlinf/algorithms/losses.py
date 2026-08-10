@@ -292,11 +292,21 @@ def compute_ppo_actor_loss(
         # Broadcast loss_mask to match ratio's shape for metrics computation
         loss_mask_for_metrics = loss_mask.expand_as(ratio)
 
+    valid_ratio_values = ratio_for_metrics[loss_mask_for_metrics.bool()]
+    if valid_ratio_values.numel() == 0:
+        ratio_p95 = torch.tensor(0.0, device=ratio.device)
+        ratio_max = torch.tensor(0.0, device=ratio.device)
+    else:
+        ratio_p95 = torch.quantile(valid_ratio_values, 0.95)
+        ratio_max = valid_ratio_values.max()
+
     metrics_data = {
         "actor/policy_loss": policy_loss.detach(),
         "actor/policy_loss_abs": metric_policy_loss_abs.detach(),
         "actor/ratio": masked_mean(ratio_for_metrics, loss_mask_for_metrics),
         "actor/ratio_abs": masked_mean(ratio_abs_for_metrics, loss_mask_for_metrics),
+        "actor/ratio_p95": ratio_p95,
+        "actor/ratio_max": ratio_max,
         "actor/clipped_ratio": masked_mean(
             clipped_ratio_for_metrics, loss_mask_for_metrics
         ),

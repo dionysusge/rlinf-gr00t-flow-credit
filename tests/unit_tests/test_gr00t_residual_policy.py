@@ -32,6 +32,7 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 GaussianResidualActor = MODULE.GaussianResidualActor
 summarize_residual_actions = MODULE.summarize_residual_actions
+summarize_residual_log_std = MODULE.summarize_residual_log_std
 
 
 def make_actor() -> GaussianResidualActor:
@@ -57,6 +58,11 @@ def test_zero_initialized_residual_is_exactly_zero_in_eval() -> None:
     assert output.raw_action.shape == (2, 4, 3)
     assert torch.equal(output.mean, torch.zeros_like(output.mean))
     assert torch.equal(output.action, torch.zeros_like(output.action))
+    assert torch.equal(output.mean_action, torch.zeros_like(output.mean_action))
+    assert torch.equal(
+        output.exploration_action,
+        torch.zeros_like(output.exploration_action),
+    )
     assert torch.allclose(output.log_std, torch.full_like(output.log_std, -2.5))
 
 
@@ -100,6 +106,28 @@ def test_residual_summary_has_dimension_and_horizon_metrics() -> None:
     assert metrics["residual/dimension/y_abs_mean"] == 0.0
     assert metrics["residual/active_fraction_gt_0.01"] == 1.0
     assert "residual/horizon/03_l2_mean" in metrics
+
+
+def test_residual_summary_separates_mean_noise_and_saturation() -> None:
+    actions = torch.full((2, 4, 3), 0.095)
+    summary = summarize_residual_actions(
+        actions,
+        dimension_names=("x", "y", "z"),
+        metric_prefix="residual/mean",
+        saturation_threshold=0.09,
+    )
+    log_std = torch.full((2, 4, 3), -2.5)
+    scale_summary = summarize_residual_log_std(
+        log_std,
+        dimension_names=("x", "y", "z"),
+    )
+
+    assert summary["residual/mean/saturation_fraction_gt_0.09"] == 1.0
+    assert summary["residual/mean/dimension/x_saturation_fraction_gt_0.09"] == 1.0
+    assert scale_summary["residual/log_std_mean"] == pytest.approx(-2.5)
+    assert scale_summary["residual/std_mean"] == pytest.approx(
+        torch.exp(torch.tensor(-2.5)).item()
+    )
 
 
 def test_residual_actor_rejects_mismatched_feature_width() -> None:
