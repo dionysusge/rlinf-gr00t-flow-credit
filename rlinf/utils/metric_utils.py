@@ -20,6 +20,8 @@ import numpy as np
 import torch
 import torch.distributed
 
+EVALUATION_METADATA_KEYS = frozenset({"task_id", "trial_id", "reset_id"})
+
 
 def compute_split_num(num, split_num):
     return math.lcm(num, split_num) // split_num
@@ -90,6 +92,8 @@ def compute_evaluate_metrics(eval_metrics_list):
         trajectory_counts.append(count)
 
     for env_info_key in env_info_keys:
+        if env_info_key in EVALUATION_METADATA_KEYS:
+            continue
         metric = [
             eval_metrics[env_info_key]
             for eval_metrics in eval_metrics_list

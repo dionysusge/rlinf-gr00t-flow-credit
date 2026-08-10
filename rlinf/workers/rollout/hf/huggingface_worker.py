@@ -537,8 +537,12 @@ class MultiStepRolloutWorker(Worker):
     ) -> torch.Tensor | None:
         if final_obs is None:
             return None
+        action_head = getattr(self.hf_model, "action_head", None)
+        has_nested_value_head = hasattr(action_head, "value_head")
         if not (
-            hasattr(self.hf_model, "value_head") or hasattr(self.hf_model, "q_head")
+            hasattr(self.hf_model, "value_head")
+            or has_nested_value_head
+            or hasattr(self.hf_model, "q_head")
         ):
             return None
         with torch.no_grad():

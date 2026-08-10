@@ -466,17 +466,12 @@ class LiberoEnv(gym.Env):
                 )
             # Select a deterministic, non-overlapping slice of the
             # interleaved evaluation reset-state pool.
-            eval_reset_offset = int(
-                self.cfg.get("eval_reset_offset", 0)
-            )
-            eval_reset_limit = int(
-                self.cfg.get("eval_reset_limit", 0)
-            )
+            eval_reset_offset = int(self.cfg.get("eval_reset_offset", 0))
+            eval_reset_limit = int(self.cfg.get("eval_reset_limit", 0))
 
             if eval_reset_offset < 0:
                 raise ValueError(
-                    "eval_reset_offset must be non-negative, "
-                    f"got {eval_reset_offset}"
+                    f"eval_reset_offset must be non-negative, got {eval_reset_offset}"
                 )
 
             if eval_reset_offset >= len(reset_state_ids):
@@ -487,17 +482,12 @@ class LiberoEnv(gym.Env):
 
             if eval_reset_limit > 0:
                 reset_state_ids = reset_state_ids[
-                    eval_reset_offset:
-                    eval_reset_offset + eval_reset_limit
+                    eval_reset_offset : eval_reset_offset + eval_reset_limit
                 ]
             else:
-                reset_state_ids = reset_state_ids[
-                    eval_reset_offset:
-                ]
+                reset_state_ids = reset_state_ids[eval_reset_offset:]
 
-            required_reset_states = (
-                self.num_group * self.total_num_processes
-            )
+            required_reset_states = self.num_group * self.total_num_processes
 
             if len(reset_state_ids) < required_reset_states:
                 raise ValueError(
@@ -647,6 +637,10 @@ class LiberoEnv(gym.Env):
         episode_info["reward"] = episode_info["return"] / np.maximum(
             episode_len_for_reward, 1
         )
+        if self.is_eval:
+            episode_info["task_id"] = self.task_ids.copy()
+            episode_info["trial_id"] = self.trial_ids.copy()
+            episode_info["reset_id"] = self.reset_state_ids.copy()
         infos["episode"] = to_tensor(episode_info)
         return infos
 
@@ -687,6 +681,9 @@ class LiberoEnv(gym.Env):
             "wrist_images": wrist_image_tensor,
             "states": states,
             "task_descriptions": self.task_descriptions,
+            "task_ids": torch.as_tensor(self.task_ids, dtype=torch.int64),
+            "trial_ids": torch.as_tensor(self.trial_ids, dtype=torch.int64),
+            "reset_ids": torch.as_tensor(self.reset_state_ids, dtype=torch.int64),
         }
         return obs
 

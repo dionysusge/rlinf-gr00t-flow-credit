@@ -42,6 +42,9 @@ from rlinf.hybrid_engines.fsdp.utils import (
 from rlinf.hybrid_engines.weight_syncer import WeightSyncer
 from rlinf.models import get_model
 from rlinf.models.embodiment.base_policy import ForwardType
+from rlinf.models.embodiment.gr00t.residual_policy import (
+    summarize_residual_actions,
+)
 from rlinf.scheduler import Channel, Cluster, Worker
 from rlinf.utils.data_iter_utils import (
     get_iterator_k_split,
@@ -1261,6 +1264,32 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
             self.rollout_batch.update({"loss_mask_sum": kwargs["loss_mask_sum"]})
 
         rollout_metrics = compute_rollout_metrics(self.rollout_batch)
+        residual_actions = self.rollout_batch.get("forward_inputs", {}).get(
+            "residual_action"
+        )
+        if residual_actions is not None:
+            dimension_names = ("dx", "dy", "dz", "drx", "dry", "drz", "gripper")
+            if residual_actions.shape[-1] != len(dimension_names):
+                dimension_names = tuple(
+                    f"dim_{idx}" for idx in range(residual_actions.shape[-1])
+                )
+            rollout_metrics.update(
+                summarize_residual_actions(
+                    residual_actions,
+                    dimension_names=dimension_names,
+                )
+            )
+            base_actions = self.rollout_batch["forward_inputs"].get("base_action")
+            if base_actions is not None:
+                residual_norm = torch.linalg.vector_norm(
+                    residual_actions.detach().float(), dim=-1
+                )
+                base_norm = torch.linalg.vector_norm(
+                    base_actions.detach().float(), dim=-1
+                )
+                rollout_metrics["residual/to_base_l2_ratio_mean"] = float(
+                    (residual_norm / (base_norm + 1e-8)).mean().item()
+                )
         return rollout_metrics
 
     def _build_sft_data_loader(self):

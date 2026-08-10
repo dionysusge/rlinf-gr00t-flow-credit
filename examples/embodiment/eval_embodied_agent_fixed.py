@@ -1,3 +1,18 @@
+# Copyright 2026 The RLinf Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import csv
 import json
 import os
 from pathlib import Path
@@ -18,7 +33,6 @@ from rlinf.workers.env.env_worker import EnvWorker
 from rlinf.workers.rollout.hf.huggingface_worker import (
     MultiStepRolloutWorker,
 )
-
 
 mp.set_start_method("spawn", force=True)
 
@@ -42,6 +56,59 @@ def to_jsonable(value):
         return value.item()
 
     return value
+
+
+def build_trial_records(metric_shards, *, label, checkpoint):
+    """Convert aligned per-rank metric tensors into structured trial rows."""
+    required = {
+        "task_id",
+        "trial_id",
+        "reset_id",
+        "success_once",
+        "return",
+        "reward",
+        "episode_len",
+    }
+    records = []
+    for shard in metric_shards:
+        missing = required.difference(shard)
+        if missing:
+            raise KeyError(f"Evaluation shard is missing fields: {sorted(missing)}")
+        lengths = {key: int(shard[key].reshape(-1).shape[0]) for key in required}
+        if len(set(lengths.values())) != 1:
+            raise ValueError(f"Evaluation shard fields are misaligned: {lengths}")
+        flattened = {key: shard[key].reshape(-1).tolist() for key in required}
+        for index in range(next(iter(lengths.values()))):
+            records.append(
+                {
+                    "task_id": int(flattened["task_id"][index]),
+                    "trial_id": int(flattened["trial_id"][index]),
+                    "reset_id": int(flattened["reset_id"][index]),
+                    "success": int(bool(flattened["success_once"][index])),
+                    "return": float(flattened["return"][index]),
+                    "reward": float(flattened["reward"][index]),
+                    "episode_length": int(flattened["episode_len"][index]),
+                    "model": label,
+                    "checkpoint": checkpoint,
+                }
+            )
+    records.sort(key=lambda row: (row["task_id"], row["trial_id"]))
+    keys = [(row["task_id"], row["trial_id"]) for row in records]
+    if len(keys) != len(set(keys)):
+        raise ValueError("Evaluation produced duplicate (task_id, trial_id) records")
+    return records
+
+
+def write_trial_records(output_dir, records):
+    """Write trial-aligned CSV and JSONL artifacts."""
+    fieldnames = list(records[0]) if records else []
+    with (output_dir / "trials.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(records)
+    with (output_dir / "trials.jsonl").open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 @hydra.main(
@@ -107,11 +174,8 @@ def main(cfg) -> None:
         # PPO checkpoint: 从 resume_dir/actor 加载
         runner.update_rollout_weights()
 
-        metrics = runner.evaluate()
-        metrics = {
-            key: to_jsonable(value)
-            for key, value in metrics.items()
-        }
+        metrics, metric_shards = runner.evaluate(return_metric_shards=True)
+        metrics = {key: to_jsonable(value) for key, value in metrics.items()}
 
         payload = {
             "label": label,
@@ -119,6 +183,14 @@ def main(cfg) -> None:
             "expected_trajectories": int(cfg.env.eval.total_num_envs),
             "metrics": metrics,
         }
+
+        checkpoint = cfg.runner.resume_dir or "sft_base"
+        trial_records = build_trial_records(
+            metric_shards,
+            label=label,
+            checkpoint=checkpoint,
+        )
+        write_trial_records(output_dir, trial_records)
 
         metrics_path = output_dir / "metrics.json"
 
@@ -139,9 +211,7 @@ def main(cfg) -> None:
         expected = int(cfg.env.eval.total_num_envs)
 
         if actual != expected:
-            raise RuntimeError(
-                f"Expected {expected} trajectories, got {actual}"
-            )
+            raise RuntimeError(f"Expected {expected} trajectories, got {actual}")
 
         print()
         print("FIXED100_EVAL_COMPLETE")

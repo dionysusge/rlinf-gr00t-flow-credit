@@ -103,6 +103,7 @@ class EmbodiedRunner:
         self.run_timer = Timer(None)  # Timer that checks if we should stop training
 
         self.consumed_samples = 0
+        self.completed_train_episodes = 0
         # the step here is GRPO step
         self.global_step = 0
 
@@ -190,7 +191,7 @@ class EmbodiedRunner:
         actor_handle.wait()
         rollout_handle.wait()
 
-    def evaluate(self):
+    def evaluate(self, *, return_metric_shards: bool = False):
         env_handle: Handle = self.env.evaluate(
             input_channel=self.env_channel,
             rollout_channel=self.rollout_channel,
@@ -203,6 +204,8 @@ class EmbodiedRunner:
         rollout_handle.wait()
         eval_metrics_list = [results for results in env_results if results is not None]
         eval_metrics = compute_evaluate_metrics(eval_metrics_list)
+        if return_metric_shards:
+            return eval_metrics, eval_metrics_list
         return eval_metrics
 
     def _log_ranked_metrics(
@@ -370,8 +373,20 @@ class EmbodiedRunner:
 
         env_results = env_handle.wait()
         env_results_list = [results for results in env_results if results is not None]
-        env_metrics = compute_evaluate_metrics(env_results_list)
-        env_metrics = {f"env/{k}": v for k, v in env_metrics.items()}
+        env_metrics_raw = compute_evaluate_metrics(env_results_list)
+        episodes_this_step = int(env_metrics_raw.get("num_trajectories", 0))
+        self.completed_train_episodes += episodes_this_step
+        transitions_per_step = (
+            int(self.cfg.env.train.total_num_envs)
+            * int(self.cfg.env.train.max_steps_per_rollout_epoch)
+            * int(self.cfg.env.train.rollout_epoch)
+        )
+        progress_metrics = {
+            "progress/environment_transitions": self.global_step * transitions_per_step,
+            "progress/episodes_this_step": episodes_this_step,
+            "progress/episodes_since_start": self.completed_train_episodes,
+        }
+        env_metrics = {f"env/{k}": v for k, v in env_metrics_raw.items()}
         ranked_env_results = [
             {"rank": rank, "env": rank_metrics}
             for rank, rank_metrics in enumerate(env_results)
@@ -394,6 +409,7 @@ class EmbodiedRunner:
         self.metric_logger.log(rollout_metrics, step)
         self.metric_logger.log(time_metrics, step)
         self.metric_logger.log(training_metrics, step)
+        self.metric_logger.log(progress_metrics, step)
         self._log_ranked_metrics(
             metrics_list=actor_rollout_metrics,
             step=step,
@@ -443,6 +459,7 @@ class EmbodiedRunner:
         logging_metrics.update(env_metrics)
         logging_metrics.update(rollout_metrics)
         logging_metrics.update(training_metrics)
+        logging_metrics.update(progress_metrics)
 
         self.print_metrics_table_async(
             step, self.max_steps, start_time, logging_metrics, start_step

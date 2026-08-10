@@ -31,6 +31,7 @@ from transformers import Qwen3VLForConditionalGeneration, Qwen3VLProcessor
 from transformers.feature_extraction_utils import BatchFeature
 
 from rlinf.models.embodiment.base_policy import BasePolicy, ForwardType
+from rlinf.models.embodiment.gr00t.residual_policy import GaussianResidualActor
 from rlinf.models.embodiment.gr00t.simulation_io import (
     ACTION_CONVERSION_N1D7,
     OBS_CONVERSION,
@@ -333,6 +334,29 @@ class FlowMatchingActionHeadForRLActionPrediction(Gr00tN1d7ActionHead):
                 bias_last=True,
             )
 
+        residual_config = self.rl_config.get("residual_policy", {})
+        self.residual_policy_enabled = bool(residual_config.get("enabled", False))
+        if self.residual_policy_enabled:
+            rng_state = torch.random.get_rng_state()
+            self.residual_actor = GaussianResidualActor(
+                vlm_width=vlm_width,
+                state_width=state_width,
+                hidden_width=int(residual_config.get("hidden_width", 512)),
+                hidden_layers=int(residual_config.get("hidden_layers", 2)),
+                action_horizon=self.action_chunk,
+                action_dim=self.env_action_dim,
+                residual_bound=float(residual_config.get("bound", 0.1)),
+                initial_log_std=float(residual_config.get("initial_log_std", -2.5)),
+                min_log_std=float(residual_config.get("min_log_std", -5.0)),
+                max_log_std=float(residual_config.get("max_log_std", 1.0)),
+            )
+            torch.random.set_rng_state(rng_state)
+            # Hugging Face initializes checkpoint-missing modules after
+            # ``__init__``. Preserve the intentional zero mean head and avoid
+            # shifting GR00T's rollout RNG relative to the undecorated policy.
+            for module in self.residual_actor.modules():
+                module._is_hf_initialized = True
+
         if self.rl_config.get("noise_method") == "reinflow":
             self.reinflow_explore_noise_net = ExploreNoiseNet(
                 in_dim=self.hidden_size,
@@ -569,6 +593,92 @@ class FlowMatchingActionHeadForRLActionPrediction(Gr00tN1d7ActionHead):
 
         values_vlm = self.value_head(value_embs)[:, 0]
         return values_vlm
+
+    def get_residual_action(
+        self,
+        backbone_output: BatchFeature,
+        action_input: BatchFeature,
+        *,
+        mode: Literal["train", "eval"],
+    ) -> dict[str, torch.Tensor]:
+        """Sample the residual policy without adding flow-SDE exploration."""
+        if not self.residual_policy_enabled:
+            raise RuntimeError(
+                "Residual action requested while residual policy is disabled"
+            )
+        if hasattr(backbone_output, "backbone_features"):
+            backbone_output = self._process_backbone_output(backbone_output)
+        vl_embs = (
+            backbone_output.backbone_features
+            if hasattr(backbone_output, "backbone_features")
+            else backbone_output
+        )
+        embodiment_id = (
+            action_input.embodiment_id if hasattr(action_input, "embodiment_id") else 0
+        )
+        state_features = self._encode_state_features(action_input, embodiment_id)
+        residual_config = self.rl_config.get("residual_policy", {})
+        force_zero = bool(residual_config.get("force_zero", False))
+        scale = float(residual_config.get("eval_scale", 1.0)) if mode == "eval" else 1.0
+        policy_output = self.residual_actor.sample(
+            vl_embs,
+            state_features,
+            deterministic=mode == "eval",
+            force_zero=force_zero,
+            scale=scale,
+        )
+        if hasattr(self, "value_head"):
+            values = self.get_value(vl_embs, state_features)[:, None]
+        else:
+            values = torch.zeros(
+                (vl_embs.shape[0], 1),
+                dtype=vl_embs.dtype,
+                device=vl_embs.device,
+            )
+        return {
+            "raw_action": policy_output.raw_action,
+            "action": policy_output.action,
+            "logprobs": policy_output.logprobs,
+            "entropy": policy_output.entropy,
+            "mean": policy_output.mean,
+            "log_std": policy_output.log_std,
+            "values": values,
+        }
+
+    def evaluate_residual_actions(
+        self,
+        backbone_output: BatchFeature,
+        action_input: BatchFeature,
+        raw_actions: torch.Tensor,
+        *,
+        compute_values: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Recompute residual log-probabilities, entropy and values."""
+        if hasattr(backbone_output, "backbone_features"):
+            backbone_output = self._process_backbone_output(backbone_output)
+        vl_embs = (
+            backbone_output.backbone_features
+            if hasattr(backbone_output, "backbone_features")
+            else backbone_output
+        )
+        embodiment_id = (
+            action_input.embodiment_id if hasattr(action_input, "embodiment_id") else 0
+        )
+        state_features = self._encode_state_features(action_input, embodiment_id)
+        logprobs, entropy = self.residual_actor.evaluate_actions(
+            vl_embs,
+            state_features,
+            raw_actions,
+        )
+        if compute_values:
+            values = self.get_value(vl_embs, state_features)
+        else:
+            values = torch.zeros(
+                vl_embs.shape[0],
+                dtype=vl_embs.dtype,
+                device=vl_embs.device,
+            )
+        return logprobs, entropy, values
 
     def get_rl_action(
         self,
@@ -835,6 +945,14 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         )
         self.action_head.env_action_dim = self.action_dim
         self.action_head.valid_action_dim = self.valid_action_dim
+        if self.action_head.residual_policy_enabled:
+            residual_dim = self.action_head.residual_actor.action_dim
+            if residual_dim != self.action_dim:
+                raise ValueError(
+                    "Residual action dim was constructed as "
+                    f"{residual_dim}, but metadata resolved {self.action_dim}. "
+                    "Set actor.model.action_dim explicitly."
+                )
 
         self._no_split_modules = self.__class__._no_split_modules
         if hasattr(self, "config"):
@@ -903,9 +1021,57 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         modality_config = getattr(modality_transform, "modality_configs", None)
         return modality_transform, modality_config
 
+    @property
+    def residual_policy_enabled(self) -> bool:
+        """Whether this model is configured as a frozen-base residual policy."""
+        return bool(self.action_head.residual_policy_enabled)
+
+    def configure_residual_training(self) -> None:
+        """Freeze GR00T and leave only the residual actor and critic trainable."""
+        if not self.residual_policy_enabled:
+            return
+        for parameter in self.parameters():
+            parameter.requires_grad = False
+        for parameter in self.action_head.residual_actor.parameters():
+            parameter.requires_grad = True
+        if hasattr(self.action_head, "value_head"):
+            for parameter in self.action_head.value_head.parameters():
+                parameter.requires_grad = True
+
+        residual_params = sum(
+            parameter.numel()
+            for parameter in self.action_head.residual_actor.parameters()
+        )
+        critic_params = (
+            sum(
+                parameter.numel()
+                for parameter in self.action_head.value_head.parameters()
+            )
+            if hasattr(self.action_head, "value_head")
+            else 0
+        )
+        total_params = sum(parameter.numel() for parameter in self.parameters())
+        logger.info(
+            "Configured frozen GR00T residual training: residual=%s, critic=%s, "
+            "frozen=%s parameters",
+            residual_params,
+            critic_params,
+            total_params - residual_params - critic_params,
+        )
+
+    def train(self, mode: bool = True):
+        """Keep the frozen GR00T base in eval mode during residual training."""
+        if not self.residual_policy_enabled:
+            return super().train(mode)
+        super().train(False)
+        self.action_head.residual_actor.train(mode)
+        if hasattr(self.action_head, "value_head"):
+            self.action_head.value_head.train(mode)
+        return self
+
     def eval(self):
         self._modality_transform.eval()
-        super().eval()
+        return super().eval()
 
     @staticmethod
     def _check_state_is_batched(obs: dict[str, Any]) -> bool:
@@ -931,6 +1097,12 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         **kwargs,
     ) -> dict[str, Any]:
         """Actor forward pass: recompute log-probs/values from cached rollouts."""
+        if self.residual_policy_enabled:
+            return self._residual_forward(
+                forward_inputs=forward_inputs,
+                compute_values=compute_values,
+                **kwargs,
+            )
         normalized_input = _normalize_gr00t_forward_inputs(forward_inputs)
         normalized_input = _canonicalize_gr00t_text_forward_inputs(
             normalized_input,
@@ -982,6 +1154,40 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             "entropy": None,
         }
 
+    def _residual_forward(
+        self,
+        *,
+        forward_inputs: dict[str, torch.Tensor],
+        compute_values: bool,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Recompute only the residual Gaussian probability ratio and critic."""
+        raw_actions = forward_inputs.get("residual_raw_action")
+        if raw_actions is None:
+            raise KeyError("Residual PPO rollout is missing residual_raw_action")
+        normalized_input = _normalize_gr00t_forward_inputs(forward_inputs)
+        normalized_input = _canonicalize_gr00t_text_forward_inputs(
+            normalized_input,
+            getattr(self, "padding_value", 0),
+        )
+        backbone_inputs, action_inputs = self.prepare_input(normalized_input)
+        backbone_outputs = self.backbone(backbone_inputs)
+        logprobs, entropy, values = self.action_head.evaluate_residual_actions(
+            backbone_outputs,
+            action_inputs,
+            raw_actions,
+            compute_values=compute_values,
+        )
+        prev_logprobs = kwargs.get("prev_logprobs")
+        if prev_logprobs is None:
+            raise KeyError("Residual PPO actor forward requires prev_logprobs")
+        return {
+            "logprobs": logprobs.float(),
+            "prev_logprobs": prev_logprobs.float(),
+            "values": values.float(),
+            "entropy": entropy.float(),
+        }
+
     @torch.no_grad()
     def predict_action_batch(
         self,
@@ -994,6 +1200,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         observations, obs_copy, is_batch = self._prepare_rollout_observation(env_obs)
         normalized_action, result = self._predict_normalized_action(obs_copy, mode)
         self._maybe_dump_flow_diagnostic(env_obs, result)
+        self._maybe_dump_residual_diagnostic(env_obs, result, normalized_action)
         unnormalized_action = self._get_unnormalized_action(
             normalized_action,
             state=observations,
@@ -1068,7 +1275,12 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             getattr(self, "padding_value", 0),
         )
 
-        if mode == "eval" and os.environ.get("FLOW_DIAG_DIR"):
+        if self.residual_policy_enabled:
+            normalized_action, result = self._get_residual_rl_action(
+                normalized_input,
+                mode=mode,
+            )
+        elif mode == "eval" and os.environ.get("FLOW_DIAG_DIR"):
             # Diagnostic path: use the RL action head in deterministic eval mode.
             # This exposes the complete denoising chain while injecting no SDE noise.
             normalized_action, result = self._get_rl_action(
@@ -1125,9 +1337,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
 
         # [B, K+1, H, D]
         if chains.ndim != 4:
-            raise ValueError(
-                f"Expected chains [B,K+1,H,D], got {tuple(chains.shape)}"
-            )
+            raise ValueError(f"Expected chains [B,K+1,H,D], got {tuple(chains.shape)}")
 
         batch_size, num_states, _, _ = chains.shape
         num_steps = num_states - 1
@@ -1143,9 +1353,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
 
         # Deterministic Euler relation:
         # x_{k+1} = x_k + dt * v_k
-        velocities = (
-            valid[:, 1:] - valid[:, :-1]
-        ) / delta_t
+        velocities = (valid[:, 1:] - valid[:, :-1]) / delta_t
 
         tau = torch.arange(
             num_steps,
@@ -1154,11 +1362,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
 
         final_action = valid[:, -1]
 
-        endpoint_pred = (
-            valid[:, :-1]
-            + velocities
-            * (1.0 - tau)[None, :, None, None]
-        )
+        endpoint_pred = valid[:, :-1] + velocities * (1.0 - tau)[None, :, None, None]
 
         def flat_norm(x):
             return torch.linalg.vector_norm(
@@ -1166,45 +1370,29 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
                 dim=-1,
             )
 
-        endpoint_error = flat_norm(
-            endpoint_pred - final_action[:, None]
-        )
+        endpoint_error = flat_norm(endpoint_pred - final_action[:, None])
 
-        endpoint_distance = flat_norm(
-            final_action[:, None] - valid[:, :-1]
-        )
+        endpoint_distance = flat_norm(final_action[:, None] - valid[:, :-1])
 
         step_delta = valid[:, 1:] - valid[:, :-1]
         step_norm = flat_norm(step_delta)
 
         v_flat = velocities.reshape(batch_size, num_steps, -1)
-        endpoint_dir = (
-            final_action[:, None] - valid[:, :-1]
-        ).reshape(batch_size, num_steps, -1)
+        endpoint_dir = (final_action[:, None] - valid[:, :-1]).reshape(
+            batch_size, num_steps, -1
+        )
 
-        alignment = (
-            (v_flat * endpoint_dir).sum(dim=-1)
-            /
-            (
-                torch.linalg.vector_norm(v_flat, dim=-1)
-                * torch.linalg.vector_norm(endpoint_dir, dim=-1)
-                + 1e-8
-            )
+        alignment = (v_flat * endpoint_dir).sum(dim=-1) / (
+            torch.linalg.vector_norm(v_flat, dim=-1)
+            * torch.linalg.vector_norm(endpoint_dir, dim=-1)
+            + 1e-8
         )
 
         if num_steps >= 2:
-            turning_cos = (
-                (v_flat[:, :-1] * v_flat[:, 1:]).sum(dim=-1)
-                /
-                (
-                    torch.linalg.vector_norm(
-                        v_flat[:, :-1], dim=-1
-                    )
-                    * torch.linalg.vector_norm(
-                        v_flat[:, 1:], dim=-1
-                    )
-                    + 1e-8
-                )
+            turning_cos = (v_flat[:, :-1] * v_flat[:, 1:]).sum(dim=-1) / (
+                torch.linalg.vector_norm(v_flat[:, :-1], dim=-1)
+                * torch.linalg.vector_norm(v_flat[:, 1:], dim=-1)
+                + 1e-8
             )
         else:
             turning_cos = torch.empty(
@@ -1250,9 +1438,7 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             "call_idx": np.asarray(call_idx, dtype=np.int64),
             "num_steps": np.asarray(num_steps, dtype=np.int64),
             "action_dim": np.asarray(action_dim, dtype=np.int64),
-            "model_label": np.asarray(
-                os.environ.get("FLOW_DIAG_LABEL", "unknown")
-            ),
+            "model_label": np.asarray(os.environ.get("FLOW_DIAG_LABEL", "unknown")),
             "reset_offset": np.asarray(
                 int(os.environ.get("FLOW_DIAG_RESET_OFFSET", "-1")),
                 dtype=np.int64,
@@ -1282,10 +1468,78 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
                     dtype=np.str_,
                 )
 
-        out_path = root / (
-            f"flow_{call_idx:06d}_pid{os.getpid()}.npz"
-        )
+        out_path = root / (f"flow_{call_idx:06d}_pid{os.getpid()}.npz")
 
+        np.savez_compressed(out_path, **payload)
+
+    def _maybe_dump_residual_diagnostic(
+        self,
+        env_obs: dict[str, Any],
+        result: dict[str, Any],
+        normalized_action: torch.Tensor,
+    ) -> None:
+        """Write residual actions and trial metadata for offline analysis."""
+        diag_dir = os.environ.get("RESIDUAL_DIAG_DIR")
+        diagnostic = result.get("residual_diagnostic")
+        if not diag_dir or not diagnostic:
+            return
+
+        call_idx = getattr(self, "_residual_diag_call_idx", 0)
+        max_calls = int(os.environ.get("RESIDUAL_DIAG_MAX_CALLS", "-1"))
+        self._residual_diag_call_idx = call_idx + 1
+        if max_calls >= 0 and call_idx >= max_calls:
+            return
+
+        root = Path(diag_dir)
+        root.mkdir(parents=True, exist_ok=True)
+
+        def to_numpy(value):
+            if value is None:
+                return None
+            if torch.is_tensor(value):
+                return value.detach().cpu().numpy()
+            if isinstance(value, np.ndarray):
+                return value
+            try:
+                return np.asarray(value)
+            except Exception:
+                return None
+
+        payload = {
+            "call_idx": np.asarray(call_idx, dtype=np.int64),
+            "base_action": to_numpy(diagnostic["base_action"]),
+            "residual_raw_action": to_numpy(diagnostic["raw_action"]),
+            "residual_action": to_numpy(diagnostic["action"]),
+            "residual_mean": to_numpy(diagnostic["mean"]),
+            "residual_log_std": to_numpy(diagnostic["log_std"]),
+            "executed_normalized_action": to_numpy(normalized_action),
+            "residual_bound": np.asarray(
+                self.action_head.residual_actor.residual_bound,
+                dtype=np.float32,
+            ),
+            "eval_scale": np.asarray(
+                self.action_head.rl_config.get("residual_policy", {}).get(
+                    "eval_scale", 1.0
+                ),
+                dtype=np.float32,
+            ),
+        }
+        for key in (
+            "states",
+            "task_ids",
+            "trial_ids",
+            "reset_ids",
+        ):
+            value = to_numpy(env_obs.get(key))
+            if value is not None:
+                payload[key] = value
+        task_descriptions = env_obs.get("task_descriptions")
+        if task_descriptions is not None:
+            payload["task_descriptions"] = np.asarray(
+                [str(item) for item in task_descriptions],
+                dtype=np.str_,
+            )
+        out_path = root / f"residual_{call_idx:06d}_pid{os.getpid()}.npz"
         np.savez_compressed(out_path, **payload)
 
     def _apply_exploration_noise(
@@ -1294,6 +1548,8 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         mode: Literal["train", "eval"],
     ) -> np.ndarray | torch.Tensor:
         """Optionally perturb actions with clipped Gaussian noise during training."""
+        if self.residual_policy_enabled:
+            return raw_action
         if mode != "train":
             return raw_action
 
@@ -1374,13 +1630,70 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
         }
         return actions, result
 
+    def _get_residual_rl_action(
+        self,
+        normalized_input: dict[str, Any],
+        mode: Literal["train", "eval"] = "train",
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        """Run frozen GR00T and add a bounded residual in normalized action space."""
+        base_action = self._get_action_from_normalized_input(normalized_input)
+        normalized_input = _normalize_gr00t_forward_inputs(normalized_input)
+        backbone_inputs, action_inputs = self.prepare_input(normalized_input)
+        backbone_outputs = self.backbone(backbone_inputs)
+        residual = self.action_head.get_residual_action(
+            backbone_outputs,
+            action_inputs,
+            mode=mode,
+        )
+
+        action = base_action.clone()
+        horizon = min(action.shape[1], residual["action"].shape[1])
+        action_dim = min(action.shape[2], residual["action"].shape[2])
+        action[:, :horizon, :action_dim] = action[:, :horizon, :action_dim] + residual[
+            "action"
+        ][:, :horizon, :action_dim].to(action.dtype)
+        residual_config = self.action_head.rl_config.get("residual_policy", {})
+        if bool(residual_config.get("clip_normalized_action", False)):
+            action = action.clamp(-1.0, 1.0)
+
+        batch_size = action.shape[0]
+        stashed_forward_inputs = {
+            key: _batchify_gr00t_forward_input(key, value, batch_size)
+            for key, value in normalized_input.items()
+        }
+        forward_inputs = {
+            "residual_raw_action": residual["raw_action"],
+            "residual_action": residual["action"],
+            "base_action": base_action[:, :horizon, :action_dim],
+            **stashed_forward_inputs,
+        }
+        result = {
+            "prev_logprobs": residual["logprobs"],
+            "prev_values": residual["values"],
+            "forward_inputs": self._finalize_rollout_forward_inputs(forward_inputs),
+            "residual_diagnostic": {
+                "base_action": base_action[:, :horizon, :action_dim],
+                "raw_action": residual["raw_action"],
+                "action": residual["action"],
+                "mean": residual["mean"],
+                "log_std": residual["log_std"],
+            },
+        }
+        return action, result
+
     def _finalize_rollout_forward_inputs(
         self,
         forward_inputs: dict[str, Any],
     ) -> dict[str, Any]:
         """Ensure cached rollout inputs are batch-splittable tensors."""
         finalized = {}
-        batch_size = int(forward_inputs["chains"].shape[0])
+        first_tensor = next(
+            (value for value in forward_inputs.values() if torch.is_tensor(value)),
+            None,
+        )
+        if first_tensor is None:
+            raise ValueError("forward_inputs must contain at least one tensor")
+        batch_size = int(first_tensor.shape[0])
         for key, value in forward_inputs.items():
             value = _tensorize_forward_input(value)
             if key in _FORWARD_INPUT_MODEL_KEYS:
