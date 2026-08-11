@@ -18,7 +18,7 @@ ROOT = Path(__file__).parents[2]
 SCRIPT = ROOT / "experiments/flow_credit/scripts/run_n17_residual_e0_fixed500.sh"
 CONFIG = (
     ROOT
-    / "examples/embodiment/config/libero_spatial_n17_residual_fixed_eval_gpu45.yaml"
+    / "examples/embodiment/config/libero_spatial_n17_residual_fixed_eval_gpu01.yaml"
 )
 EVALUATOR = ROOT / "examples/embodiment/eval_embodied_agent_fixed.py"
 
@@ -27,7 +27,7 @@ def test_e0_keeps_two_gpu_ray_parallelism() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
     config = CONFIG.read_text(encoding="utf-8")
 
-    assert "CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu45" in script
+    assert "CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu01" in script
     assert "eval_embodied_agent_fixed.py" in script
     assert "RLINF_FORCE_LOCAL_RAY=1" in script
     assert "actor: 0-1" in config
@@ -43,6 +43,8 @@ def test_e0_uses_non_overlapping_slices_and_bounded_retries() -> None:
     assert 'E0_MAX_ATTEMPTS="${E0_MAX_ATTEMPTS:-2}"' in script
     assert "timeout --signal=TERM --kill-after=120s" in script
     assert "n17_residual_e0.lock" in script
+    assert "STALE_EVAL_PIDS" in script
+    assert "stale evaluator processes still target" in script
 
 
 def test_e0_fixed100_cycles_twenty_envs_over_five_epochs() -> None:

@@ -17,10 +17,10 @@ from pathlib import Path
 ROOT = Path(__file__).parents[2]
 PPO_CONFIG = (
     ROOT / "examples/embodiment/config/"
-    "libero_spatial_residual_ppo_gr00t_n1d7_h200_gpu23.yaml"
+    "libero_spatial_residual_ppo_gr00t_n1d7_h200_gpu01.yaml"
 )
 PPO_SCRIPT = (
-    ROOT / "experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu23.sh"
+    ROOT / "experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu01.sh"
 )
 PD_SCRIPT = ROOT / "experiments/policy_decorator_gr00t/run.sh"
 

@@ -5,7 +5,7 @@ CHECKPOINT=${1:?Usage: $0 /absolute/path/to/full_ppo/global_step_600}
 PROJECT=/data/Wayne/gzw/rlinf_gr00t_n17
 BULK=/mnt/models/gzw/rlinf_gr00t_n17
 RLINF="$PROJECT/RLinf"
-CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu45
+CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu01
 ENTRY="$RLINF/examples/embodiment/eval_embodied_agent_fixed.py"
 test -d "$CHECKPOINT/actor"
 

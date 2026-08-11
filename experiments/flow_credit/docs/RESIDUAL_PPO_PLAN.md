@@ -99,7 +99,7 @@ artifacts are uploaded to that same run in `GR00T-Residual-RL`.
 
 ```bash
 tmux new -s residual-e1
-bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu23.sh
+bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu01.sh
 ```
 
 The launcher validates the GR00T checkpoint and resolves the Cosmos backbone

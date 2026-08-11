@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT=/data/Wayne/gzw/rlinf_gr00t_n17
 BULK=/mnt/models/gzw/rlinf_gr00t_n17
 RLINF="$PROJECT/RLinf"
-CONFIG_NAME=libero_spatial_residual_ppo_gr00t_n1d7_h200_gpu23
+CONFIG_NAME=libero_spatial_residual_ppo_gr00t_n1d7_h200_gpu01
 
 source "$PROJECT/scripts/activate_rlinf.sh"
 

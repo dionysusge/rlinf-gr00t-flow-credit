@@ -6,7 +6,7 @@ ulimit -n 65535 2>/dev/null || true
 PROJECT=/data/Wayne/gzw/rlinf_gr00t_n17
 BULK=/mnt/models/gzw/rlinf_gr00t_n17
 RLINF="$PROJECT/RLinf"
-CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu45
+CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu01
 ENTRY="$RLINF/examples/embodiment/eval_embodied_agent_fixed.py"
 
 # Keep the lock in a small outer process. --close prevents the Python driver
@@ -70,6 +70,19 @@ fi
 STAMP=$(date +%Y%m%d_%H%M%S)
 EVAL_ROOT="${E0_RESUME_ROOT:-$BULK/evaluations/n17_residual_e0_seeded_fixed500_${STAMP}}"
 mkdir -p "$EVAL_ROOT"
+mapfile -t STALE_EVAL_PIDS < <(
+    pgrep -f "[e]val_embodied_agent_fixed.py.*runner.logger.log_path=$EVAL_ROOT" \
+        || true
+)
+if (( ${#STALE_EVAL_PIDS[@]} > 0 )); then
+    echo "E0 cannot start: stale evaluator processes still target $EVAL_ROOT" >&2
+    for stale_pid in "${STALE_EVAL_PIDS[@]}"; do
+        ps -p "$stale_pid" -o pid,ppid,user,stat,lstart,cmd --no-headers >&2 \
+            || true
+    done
+    echo "Terminate only the listed PIDs, then resume the same E0 root." >&2
+    exit 74
+fi
 if [[ -f "$EVAL_ROOT/wandb_evidence_run_id.txt" ]]; then
     WANDB_EVIDENCE_RUN_ID=$(<"$EVAL_ROOT/wandb_evidence_run_id.txt")
 else
