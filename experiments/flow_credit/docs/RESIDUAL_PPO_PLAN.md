@@ -26,7 +26,7 @@ The first round answers only:
 - Historical unseeded base reference: GR00T N1.7 LIBERO-Spatial SFT
   (444/500, 88.8%); the seeded E0 run establishes the new paired base.
 - Full PPO reference: global step 600 (458/500, 91.6%).
-- Hardware lanes: the seeded E0 evaluator uses physical H200 GPU 4 only;
+- Hardware lanes: seeded evaluation jobs use physical H200 GPUs 4 and 5;
   Residual PPO training uses physical H200 GPUs 2 and 3.
 - Action horizon: 16; flow steps: 4.
 - Residual: normalized-action bound 0.1, two-layer 512-width MLP,
@@ -52,13 +52,15 @@ git pull --ff-only
 source /data/Wayne/gzw/rlinf_gr00t_n17/scripts/activate_rlinf.sh
 ```
 
-Run long jobs inside `tmux` and do not launch E0 concurrently with E1. E0 now
-uses a direct single-process GR00T evaluator: it does not initialize Ray, FSDP,
-Gloo, actor workers or rollout workers. Ten local LIBERO subprocesses cover each
-100-trial set in ordered waves. It does not stop account-wide Ray processes by
-default, so unrelated jobs such as GPU 7 are left alone. Set
-`E0_CLEAN_STALE_RAY=1` only when explicitly intending to stop all same-user Ray
-processes before E0.
+Run long jobs inside `tmux`. E0 remains internally parallel on GPUs 4/5: Ray
+launches two actor ranks, two rollout ranks and the parallel environment
+workers required by the existing fixed-evaluation pipeline. Do not launch E1
+on GPUs 2/3 until E0 has finished.
+Every script validates its short `RAY_TMPDIR` before loading the model. The
+fixed-evaluation entry shuts down its own local Ray runtime; the scripts do not
+use the account-wide `ray stop --force` command. The experiment scripts also
+set `RLINF_FORCE_LOCAL_RAY=1`. E0 additionally holds a launcher lock so a
+second E0 cannot accidentally create another Ray runtime on GPUs 4/5.
 
 ## E0: seeded zero-residual equivalence check
 
@@ -69,10 +71,9 @@ bash experiments/flow_credit/scripts/run_n17_residual_e0_fixed500.sh
 
 Flow inference samples an initial Gaussian latent even when language/token
 sampling is disabled. `env.eval.seed` controls fixed LIBERO reset states;
-`model_seed=1234` separately controls the single-process model-side RNG. The
-seed is reset after model loading for each set. The five non-overlapping slices
-start at offsets 0, 100, 200, 300 and
-400. The script evaluates both residual-disabled and `force_zero=true`
+`rollout.seed=1234` separately controls that model-side RNG (with a rank
+offset). The five non-overlapping 100-trial slices start at offsets 0, 100, 200,
+300 and 400. The script evaluates both residual-disabled and `force_zero=true`
 policies on all five 100-trial sets, then creates `E0_PASS` only if all 500
 paired success outcomes match exactly (`rescue=0`, `harm=0`).
 
@@ -83,13 +84,16 @@ repeat them. The historical unseeded 444/500 result remains in
 `historical_reference.json`; it is a reference, not an exact gate for the new
 seeded inference stream. Do not launch E1 if E0 fails.
 
-The E0 W&B run is registered at startup and keeps the same stable run ID. Each
-completed set appends its direct success, reward, episode-length, runtime and
-fixed-slice metadata to that run; final aggregate, pairing, repeatability,
-Tables and compact evidence artifacts are uploaded to the same run.
+E0 runs in parallel on GPUs 4 and 5, but it runs as the only experiment. A
+failed worker now has a 15-minute collective timeout instead of the former
+three-hour Gloo wait; each fixed set has a 45-minute outer timeout and up to two
+fresh-Ray attempts. Completed sets are validated and can be reused by setting
+`E0_RESUME_ROOT` to the interrupted output root.
 
-E0 runs on GPU 4 only. Wait for `E0_PASS` before launching E1; concurrent E0/E1
-runs are no longer part of the supported experiment procedure.
+The E0 W&B run is registered at startup and retains a stable run ID. Every
+completed set appends its fixed-slice success, reward and episode-length
+metrics; final aggregate, pairing, repeatability, Tables and compact evidence
+artifacts are uploaded to that same run in `GR00T-Residual-RL`.
 
 ## E1: Residual-PPO-0.1
 

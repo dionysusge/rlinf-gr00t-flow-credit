@@ -106,13 +106,12 @@ def collect_events(kind: str, root: Path) -> tuple[list[dict[str, object]], str 
             ("base", "base/aggregate/per_set_summary.csv"),
         ):
             path = root / relative
-            if not path.is_file():
-                continue
-            for row in read_csv(path):
-                set_name = str(row["set"])
-                for key, value in row.items():
-                    if key != "set":
-                        event[f"e0/{variant}/{set_name}/{key}"] = value
+            if path.is_file():
+                for row in read_csv(path):
+                    set_name = str(row["set"])
+                    for key, value in row.items():
+                        if key != "set":
+                            event[f"e0/{variant}/{set_name}/{key}"] = value
         for variant, relative_root in (("zero", Path()), ("base", Path("base"))):
             for set_name in ("setA", "setB", "setC", "setD", "setE"):
                 path = root / relative_root / set_name / "metrics.json"
@@ -125,6 +124,9 @@ def collect_events(kind: str, root: Path) -> tuple[list[dict[str, object]], str 
                         prefix=f"e0/{variant}/{set_name}/direct",
                     )
                 )
+                for key in ("eval_reset_offset", "eval_reset_limit"):
+                    if key in payload:
+                        event[f"e0/{variant}/{set_name}/direct/{key}"] = payload[key]
         return [event], None
 
     if kind == "checkpoint_sweep":

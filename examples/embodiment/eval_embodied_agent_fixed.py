@@ -15,14 +15,16 @@
 import csv
 import json
 import os
+import signal
 from pathlib import Path
+from typing import Any
 
 import hydra
 import numpy as np
 import ray
 import torch
 import torch.multiprocessing as mp
-from omegaconf import open_dict
+from omegaconf import OmegaConf, open_dict
 
 from rlinf.config import validate_cfg
 from rlinf.runners.embodied_runner import EmbodiedRunner
@@ -35,6 +37,19 @@ from rlinf.workers.rollout.hf.huggingface_worker import (
 )
 
 mp.set_start_method("spawn", force=True)
+
+
+def close_worker_groups(groups: tuple[tuple[str, Any], ...]) -> list[str]:
+    """Release Ray worker groups in dependency order without masking failures."""
+    errors = []
+    for name, group in groups:
+        if group is None:
+            continue
+        try:
+            group._close()
+        except Exception as error:  # pragma: no cover - requires live Ray actors
+            errors.append(f"{name}: {type(error).__name__}: {error}")
+    return errors
 
 
 def to_jsonable(value):
@@ -117,6 +132,12 @@ def write_trial_records(output_dir, records):
     config_name="libero_spatial_n17_fixed100_eval_gpu23",
 )
 def main(cfg) -> None:
+    previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+
+    def terminate(_signum, _frame):
+        raise KeyboardInterrupt("fixed evaluation received SIGTERM")
+
+    signal.signal(signal.SIGTERM, terminate)
     cfg = validate_cfg(cfg)
 
     # The config is validated as evaluation-only, but PPO checkpoints are
@@ -131,6 +152,7 @@ def main(cfg) -> None:
 
     output_dir = Path(cfg.runner.logger.log_path).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(cfg, output_dir / "resolved_config.yaml", resolve=True)
 
     label = os.environ.get("EVAL_LABEL", "unknown")
 
@@ -181,6 +203,8 @@ def main(cfg) -> None:
             "label": label,
             "resume_dir": cfg.runner.resume_dir,
             "expected_trajectories": int(cfg.env.eval.total_num_envs),
+            "eval_reset_offset": int(cfg.env.eval.get("eval_reset_offset", 0)),
+            "eval_reset_limit": int(cfg.env.eval.get("eval_reset_limit", 0)),
             "metrics": metrics,
         }
 
@@ -217,9 +241,24 @@ def main(cfg) -> None:
         print("FIXED100_EVAL_COMPLETE")
     finally:
         try:
-            runner._finish_run()
+            try:
+                runner._finish_run()
+            except Exception as error:
+                print(f"Warning: metric logger cleanup failed: {error}")
+            cleanup_errors = close_worker_groups(
+                (
+                    ("env", env_group),
+                    ("rollout", rollout_group),
+                    ("actor", actor_group),
+                )
+            )
+            for cleanup_error in cleanup_errors:
+                print(f"Warning: worker cleanup failed: {cleanup_error}")
         finally:
-            ray.shutdown()
+            try:
+                ray.shutdown()
+            finally:
+                signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
 if __name__ == "__main__":

@@ -6,8 +6,25 @@ ulimit -n 65535 2>/dev/null || true
 PROJECT=/data/Wayne/gzw/rlinf_gr00t_n17
 BULK=/mnt/models/gzw/rlinf_gr00t_n17
 RLINF="$PROJECT/RLinf"
-CONFIG_NAME=libero_spatial_n17_fixed100_eval_no_ray_gpu4
-ENTRY="$RLINF/examples/embodiment/eval_gr00t_fixed_no_ray.py"
+CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu45
+ENTRY="$RLINF/examples/embodiment/eval_embodied_agent_fixed.py"
+
+# Keep the lock in a small outer process. --close prevents the Python driver
+# and Ray workers from inheriting its file descriptor.
+if [[ "${E0_LOCK_HELD:-0}" != "1" ]]; then
+    mkdir -p "$BULK/locks"
+    SCRIPT_PATH=$(readlink -f "$0")
+    set +e
+    flock --close --nonblock --conflict-exit-code 73 \
+        "$BULK/locks/n17_residual_e0.lock" \
+        env E0_LOCK_HELD=1 bash "$SCRIPT_PATH" "$@"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 73 ]]; then
+        echo "Another E0 launcher is already using GPUs 4/5" >&2
+    fi
+    exit "$rc"
+fi
 
 source "$PROJECT/scripts/activate_rlinf.sh"
 export EMBODIED_PATH="$RLINF/examples/embodiment"
@@ -26,30 +43,32 @@ export WANDB_ENTITY=liwuyu-cloudbutterfly
 export WANDB_PROJECT=GR00T-Residual-RL
 export WANDB_RUN_GROUP=Residual-Locality-Evidence
 export HYDRA_FULL_ERROR=1
+export RAY_DEDUP_LOGS=0
+export RLINF_FORCE_LOCAL_RAY=1
+# A dead rollout rank must not leave its peers blocked in Gloo for the default
+# 180 minutes. Normal fixed100 evaluation takes only a few minutes.
+export RLINF_TIMEOUT="${E0_COLLECTIVE_TIMEOUT_MINUTES:-15}"
+# Keep this path short: Ray embeds a long session name below it and Linux
+# AF_UNIX socket paths are limited to 107 bytes.
+export RAY_TMPDIR=/mnt/models/gzw/raytmp/e0
 export PYTHONPATH="$RLINF:${PYTHONPATH:-}"
-E0_GPU="${E0_GPU:-4}"
-if [[ ! "$E0_GPU" =~ ^[0-9]+$ ]]; then
-    echo "E0_GPU must name exactly one physical GPU, got: $E0_GPU" >&2
-    exit 2
-fi
-export E0_GPU CUDA_VISIBLE_DEVICES="$E0_GPU"
+unset CUDA_VISIBLE_DEVICES 2>/dev/null || true
 unset MUJOCO_EGL_DEVICE_ID 2>/dev/null || true
 unset RAY_ADDRESS 2>/dev/null || true
-unset RLINF_FORCE_LOCAL_RAY 2>/dev/null || true
-unset RAY_TMPDIR 2>/dev/null || true
 unset RESIDUAL_DIAG_DIR 2>/dev/null || true
 
-mkdir -p "$BULK/evaluations" "$BULK/logs"
+mkdir -p "$RAY_TMPDIR" "$BULK/evaluations" "$BULK/logs" "$BULK/locks"
+python "$RLINF/experiments/flow_credit/analysis/validate_ray_tmpdir.py" "$RAY_TMPDIR"
 
-# The direct evaluator below never imports or initializes Ray. Account-wide
-# cleanup is opt-in so an unrelated job (for example on GPU 7) is not touched.
-if [[ "${E0_CLEAN_STALE_RAY:-0}" == "1" ]] && command -v ray >/dev/null 2>&1; then
-    echo "[E0 preflight] stopping same-user Ray processes by explicit request"
-    ray stop --force >/dev/null 2>&1 || true
+export E0_MAX_ATTEMPTS="${E0_MAX_ATTEMPTS:-2}"
+export E0_SET_TIMEOUT="${E0_SET_TIMEOUT:-45m}"
+if [[ ! "$E0_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "E0_MAX_ATTEMPTS must be a positive integer" >&2
+    exit 2
 fi
 
 STAMP=$(date +%Y%m%d_%H%M%S)
-EVAL_ROOT="${E0_RESUME_ROOT:-$BULK/evaluations/n17_residual_e0_seeded_fixed500_no_ray_${STAMP}}"
+EVAL_ROOT="${E0_RESUME_ROOT:-$BULK/evaluations/n17_residual_e0_seeded_fixed500_${STAMP}}"
 mkdir -p "$EVAL_ROOT"
 if [[ -f "$EVAL_ROOT/wandb_evidence_run_id.txt" ]]; then
     WANDB_EVIDENCE_RUN_ID=$(<"$EVAL_ROOT/wandb_evidence_run_id.txt")
@@ -69,13 +88,19 @@ from pathlib import Path
 Path(sys.argv[1]).write_text(
     json.dumps(
         {
-            "gpus": [int(__import__("os").environ.get("E0_GPU", "4"))],
-            "runtime": "direct_no_ray",
-            "parallel_envs": 10,
-            "ray_initialized": False,
+            "gpus": [4, 5],
+            "runtime": "ray_fsdp_parallel",
+            "parallel_actor_workers": 2,
+            "parallel_rollout_workers": 2,
             "env_seed": 0,
             "rollout_seed": 1234,
-            "rollout_rank_seed_rule": "single model process; seed reset per set",
+            "rollout_rank_seed_rule": "rollout_seed + rollout_rank",
+            "collective_timeout_minutes": int(
+                __import__("os").environ.get("RLINF_TIMEOUT", "15")
+            ),
+            "max_attempts_per_set": int(
+                __import__("os").environ.get("E0_MAX_ATTEMPTS", "2")
+            ),
             "sets": ["setA", "setB", "setC", "setD", "setE"],
             "trials_per_variant": 500,
             "variants": {
@@ -126,21 +151,15 @@ on_exit() {
 }
 trap on_exit EXIT
 
-# Register the stable run ID immediately; per-set calls below append metrics to
-# this same run while the overnight E0 is still in progress.
+# Make the W&B run visible at launch. Completed set metrics append to the same
+# stable run ID below.
 upload_progress
 
-run_variant() {
-    variant=$1
-    variant_root=$2
-    residual_enabled=$3
-    force_zero=$4
-    for index in "${!SET_NAMES[@]}"; do
-        set_name=${SET_NAMES[$index]}
-        offset=${OFFSETS[$index]}
-        output_dir="$variant_root/$set_name"
-        mkdir -p "$output_dir"
-        if python - "$output_dir" "$offset" "e0-$variant-$set_name" <<'PY'
+validate_fixed_set() {
+    local output_dir=$1
+    local expected_offset=$2
+    local expected_label=$3
+    python - "$output_dir" "$expected_offset" "$expected_label" <<'PY'
 import csv
 import json
 import sys
@@ -153,36 +172,44 @@ try:
     with (root / "trials.csv").open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     payload = json.loads((root / "metrics.json").read_text(encoding="utf-8"))
-    metrics = payload["metrics"]
+    exit_code = (root / "exit_code.txt").read_text(encoding="utf-8").strip()
     ok = (
-        len(rows) == 100
+        exit_code == "0"
+        and len(rows) == 100
         and len({(row["task_id"], row["trial_id"]) for row in rows}) == 100
         and {row["model"] for row in rows} == {expected_label}
         and payload["label"] == expected_label
-        and metrics["num_trajectories"] == 100
-        and metrics["runtime"] == "direct_no_ray"
-        and metrics["ray_initialized"] is False
-        and metrics["eval_reset_offset"] == expected_offset
-        and metrics["eval_reset_limit"] == 100
-        and (root / "NO_RAY_EVAL_COMPLETE").is_file()
+        and payload["expected_trajectories"] == 100
+        and payload["metrics"]["num_trajectories"] == 100
+        and payload["eval_reset_offset"] == expected_offset
+        and payload["eval_reset_limit"] == 100
     )
 except (OSError, KeyError, ValueError, json.JSONDecodeError):
     ok = False
 raise SystemExit(0 if ok else 1)
 PY
-        then
-            echo "[E0] reusing completed $variant/$set_name"
-            upload_progress
-            continue
-        fi
-        echo "[E0] evaluating $variant/$set_name (trial offset $offset)"
-        if [[ -f "$output_dir/evaluation.log" ]]; then
-            mv "$output_dir/evaluation.log" \
-                "$output_dir/evaluation.previous.$STAMP.log"
-        fi
+}
+
+run_fixed_set() {
+    local output_dir=$1
+    local offset=$2
+    local label=$3
+    local residual_enabled=$4
+    local force_zero=$5
+    local attempt rc
+
+    mkdir -p "$output_dir"
+    if validate_fixed_set "$output_dir" "$offset" "$label"; then
+        echo "[E0] reusing completed $label"
+        upload_progress
+        return 0
+    fi
+
+    for ((attempt = 1; attempt <= E0_MAX_ATTEMPTS; attempt++)); do
+        echo "[E0] evaluating $label (offset=$offset, attempt=$attempt/$E0_MAX_ATTEMPTS)"
         set +e
-        timeout --signal=TERM --kill-after=60s \
-            "${E0_SET_TIMEOUT:-4h}" \
+        EVAL_LABEL="$label" timeout --signal=TERM --kill-after=120s \
+            "$E0_SET_TIMEOUT" \
             python "$ENTRY" \
             --config-path "$EMBODIED_PATH/config" \
             --config-name "$CONFIG_NAME" \
@@ -191,52 +218,53 @@ PY
             ++env.eval.eval_reset_limit=100 \
             "++actor.model.rl_head_config.residual_policy.enabled=$residual_enabled" \
             "++actor.model.rl_head_config.residual_policy.force_zero=$force_zero" \
-            direct_eval.model_seed=1234 \
-            direct_eval.label="e0-$variant-$set_name" \
+            "++rollout.model.rl_head_config.residual_policy.enabled=$residual_enabled" \
+            "++rollout.model.rl_head_config.residual_policy.force_zero=$force_zero" \
             runner.logger.log_path="$output_dir" \
-            runner.logger.experiment_name="e0-$variant-$set_name" \
+            runner.logger.experiment_name="$label" \
             2>&1 | tee "$output_dir/evaluation.log"
         rc=${PIPESTATUS[0]}
         set -e
         echo "$rc" > "$output_dir/exit_code.txt"
-        if [[ "$rc" -ne 0 ]]; then
-            if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
-                printf 'E0 direct evaluator timed out (rc=%s)\n' "$rc" \
-                    > "$output_dir/EVAL_TIMEOUT"
-            fi
-            exit "$rc"
-        fi
-        python - "$output_dir" "$offset" "e0-$variant-$set_name" <<'PY'
-import csv
-import json
-import sys
-from pathlib import Path
+        echo "$rc" > "$output_dir/exit_code.attempt${attempt}.txt"
 
-root = Path(sys.argv[1])
-expected_offset = int(sys.argv[2])
-expected_label = sys.argv[3]
-with (root / "trials.csv").open(newline="", encoding="utf-8") as handle:
-    rows = list(csv.DictReader(handle))
-payload = json.loads((root / "metrics.json").read_text(encoding="utf-8"))
-metrics = payload["metrics"]
-keys = {(row["task_id"], row["trial_id"]) for row in rows}
-if len(rows) != 100 or len(keys) != 100:
-    raise SystemExit(f"invalid fixed trial output: rows={len(rows)}, unique={len(keys)}")
-if {row["model"] for row in rows} != {expected_label}:
-    raise SystemExit(f"unexpected model labels in {root}")
-if payload["label"] != expected_label:
-    raise SystemExit(f"unexpected metrics label in {root}")
-if metrics.get("runtime") != "direct_no_ray" or metrics.get("ray_initialized") is not False:
-    raise SystemExit("E0 unexpectedly used a non-direct runtime")
-if metrics.get("num_trajectories") != 100:
-    raise SystemExit("E0 metrics do not report exactly 100 trajectories")
-if metrics.get("eval_reset_offset") != expected_offset or metrics.get("eval_reset_limit") != 100:
-    raise SystemExit(f"unexpected fixed-reset slice in {root}")
-if not (root / "NO_RAY_EVAL_COMPLETE").is_file():
-    raise SystemExit("missing NO_RAY_EVAL_COMPLETE marker")
-print(f"validated {root}: 100 unique no-Ray trials")
-PY
-        upload_progress
+        if [[ "$rc" -eq 0 ]]; then
+            if validate_fixed_set "$output_dir" "$offset" "$label"; then
+                echo "[E0] validated $label: 100 unique fixed trials"
+                upload_progress
+                return 0
+            fi
+            rc=3
+            echo "$rc" > "$output_dir/exit_code.txt"
+        fi
+        if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
+            printf 'attempt=%s timeout_rc=%s\n' "$attempt" "$rc" \
+                > "$output_dir/EVAL_TIMEOUT.attempt${attempt}"
+        fi
+        if ((attempt < E0_MAX_ATTEMPTS)); then
+            echo "[E0] $label failed validation (rc=$rc); retrying with a fresh local Ray runtime"
+            sleep 10
+        fi
+    done
+
+    echo "[E0] $label failed after $E0_MAX_ATTEMPTS attempts" >&2
+    return "${rc:-1}"
+}
+
+run_variant() {
+    variant=$1
+    variant_root=$2
+    residual_enabled=$3
+    force_zero=$4
+    for index in "${!SET_NAMES[@]}"; do
+        set_name=${SET_NAMES[$index]}
+        offset=${OFFSETS[$index]}
+        run_fixed_set \
+            "$variant_root/$set_name" \
+            "$offset" \
+            "e0-$variant-$set_name" \
+            "$residual_enabled" \
+            "$force_zero"
     done
 }
 
@@ -318,67 +346,8 @@ PY
 # a hard gate. With rollout.seed configured, any mismatch means the inference
 # pipeline is not repeatable enough for per-trial rescue/harm analysis.
 REPEAT_DIR="$EVAL_ROOT/setA_repeat"
-mkdir -p "$REPEAT_DIR"
 echo "[E0-R] repeating Set-A (trial offset 0) for per-trial repeatability"
-if python - "$REPEAT_DIR" <<'PY'
-import csv
-import json
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-try:
-    with (root / "trials.csv").open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
-    payload = json.loads((root / "metrics.json").read_text(encoding="utf-8"))
-    metrics = payload["metrics"]
-    ok = (
-        len(rows) == 100
-        and len({(row["task_id"], row["trial_id"]) for row in rows}) == 100
-        and {row["model"] for row in rows} == {"e0-zero-setA-repeat"}
-        and payload["label"] == "e0-zero-setA-repeat"
-        and metrics["num_trajectories"] == 100
-        and metrics["runtime"] == "direct_no_ray"
-        and metrics["ray_initialized"] is False
-        and metrics["eval_reset_offset"] == 0
-        and metrics["eval_reset_limit"] == 100
-        and (root / "NO_RAY_EVAL_COMPLETE").is_file()
-    )
-except (OSError, KeyError, ValueError, json.JSONDecodeError):
-    ok = False
-raise SystemExit(0 if ok else 1)
-PY
-then
-    echo "[E0-R] reusing completed Set-A repeat"
-else
-    if [[ -f "$REPEAT_DIR/evaluation.log" ]]; then
-        mv "$REPEAT_DIR/evaluation.log" \
-            "$REPEAT_DIR/evaluation.previous.$STAMP.log"
-    fi
-    set +e
-    timeout --signal=TERM --kill-after=60s \
-        "${E0_SET_TIMEOUT:-4h}" \
-        python "$ENTRY" \
-        --config-path "$EMBODIED_PATH/config" \
-        --config-name "$CONFIG_NAME" \
-        runner.resume_dir=null \
-        ++env.eval.eval_reset_offset=0 \
-        ++env.eval.eval_reset_limit=100 \
-        ++actor.model.rl_head_config.residual_policy.enabled=true \
-        ++actor.model.rl_head_config.residual_policy.force_zero=true \
-        direct_eval.model_seed=1234 \
-        direct_eval.label="e0-zero-setA-repeat" \
-        runner.logger.log_path="$REPEAT_DIR" \
-        runner.logger.experiment_name="e0-zero-setA-repeat" \
-        2>&1 | tee "$REPEAT_DIR/evaluation.log"
-    rc=${PIPESTATUS[0]}
-    set -e
-    echo "$rc" > "$REPEAT_DIR/exit_code.txt"
-    if [[ "$rc" -ne 0 ]]; then
-        exit "$rc"
-    fi
-fi
-upload_progress
+run_fixed_set "$REPEAT_DIR" 0 "e0-zero-setA-repeat" true true
 
 python experiments/flow_credit/analysis/analyze_residual_pairing.py \
     --base "$EVAL_ROOT/setA/trials.csv" \

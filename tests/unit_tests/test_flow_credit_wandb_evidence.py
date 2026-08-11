@@ -147,11 +147,9 @@ def test_e0_event_flattens_all_evidence_groups(tmp_path: Path) -> None:
     (tmp_path / "setA" / "metrics.json").write_text(
         json.dumps(
             {
-                "metrics": {
-                    "success_rate": 0.9,
-                    "runtime": "direct_no_ray",
-                    "ray_initialized": False,
-                }
+                "eval_reset_offset": 0,
+                "eval_reset_limit": 100,
+                "metrics": {"success_rate": 0.9, "num_trajectories": 100},
             }
         ),
         encoding="utf-8",
@@ -168,8 +166,8 @@ def test_e0_event_flattens_all_evidence_groups(tmp_path: Path) -> None:
     assert events[0]["e0/historical_reference/historical_unseeded_successes"] == 444
     assert events[0]["e0/zero/setA/success_rate"] == 0.9
     assert events[0]["e0/base/setA/successes"] == 89
-    assert events[0]["e0/zero/setA/direct/runtime"] == "direct_no_ray"
-    assert events[0]["e0/zero/setA/direct/ray_initialized"] is False
+    assert events[0]["e0/zero/setA/direct/num_trajectories"] == 100
+    assert events[0]["e0/zero/setA/direct/eval_reset_offset"] == 0
 
     tables = dict(MODULE.table_paths("e0", tmp_path))
     assert "aggregate_per_set_summary" in tables
