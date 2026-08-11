@@ -27,7 +27,7 @@ actor:
   model:
     model_type: gr00t_n1d7
     model_path: /data/Wayne/gzw/rlinf_gr00t_n17/models/GR00T-N1.7-LIBERO/libero_spatial
-    backbone_model_path: /data/Wayne/gzw/rlinf_gr00t_n17/models/Cosmos-Reason2-2B
+    backbone_model_path: /data/Wayne/gzw/gr00t_n1_7/models/Cosmos-Reason2-2B
     embodiment_tag: libero_sim
     precision: bf16
     action_dim: 7
@@ -104,7 +104,7 @@ policy_decorator:
   max_grad_norm: 10.0
 
   replay_capacity: 20000
-  replay_storage_dtype: float16
+  replay_storage_dtype: float32
   learning_starts: 256
   batch_size: 256
   updates_per_step: 1
@@ -114,7 +114,9 @@ policy_decorator:
   resume_path: null
 
   zero_smoke_episodes: 100
-  zero_smoke_min_success_rate: 1.0
+  # Success is evidence, not an adapter invariant. The hard gate is exact
+  # executed==base identity, finite tensors, and completed episodes.
+  zero_smoke_min_success_rate: null
   random_smoke_episodes: 20
   random_residual_std: 0.25
   random_smoke_min_successes: 1

@@ -24,6 +24,7 @@ import numpy as np
 import torch
 from omegaconf.omegaconf import OmegaConf
 
+from rlinf.envs.chunk_utils import mask_after_first_done
 from rlinf.envs.libero.utils import (
     build_interleaved_eval_reset_state_ids,
     distribute_reset_state_ids_round_robin,
@@ -628,7 +629,9 @@ class LiberoEnv(gym.Env):
         self.success_once = self.success_once | terminations
         episode_info["success_once"] = self.success_once.copy()
         episode_info["return"] = self.returns.copy()
-        episode_info["episode_len"] = self.elapsed_steps.copy()
+        episode_info["episode_len"] = np.where(
+            self.success_once, self.success_episode_len, self.elapsed_steps
+        ).copy()
 
         # Use success episode_len for reward if already succeeded, else current elapsed
         episode_len_for_reward = np.where(
@@ -816,6 +819,21 @@ class LiberoEnv(gym.Env):
         raw_chunk_truncations = torch.stack(
             raw_chunk_truncations, dim=1
         )  # [num_envs, chunk_steps]
+
+        # The vectorized simulator is advanced for the full open-loop chunk,
+        # but an RL episode ends at its first termination/truncation. Discard
+        # all later rewards and done flags so SAC and PPO see the same semantics
+        # as a sequential action wrapper that breaks on done.
+        (
+            chunk_rewards,
+            raw_chunk_terminations,
+            raw_chunk_truncations,
+            _valid_chunk_steps,
+        ) = mask_after_first_done(
+            chunk_rewards,
+            raw_chunk_terminations,
+            raw_chunk_truncations,
+        )
 
         past_terminations = raw_chunk_terminations.any(dim=1)
         past_truncations = raw_chunk_truncations.any(dim=1)

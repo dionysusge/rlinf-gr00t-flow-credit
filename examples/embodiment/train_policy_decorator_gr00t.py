@@ -94,6 +94,9 @@ class PolicyDecoratorExperiment:
             raise RuntimeError("Could not construct configured GR00T model")
         self.model.to(self.model_device)
         self.model.eval()
+        # Model construction/loading consumes RNG. Restore the experiment seed
+        # so seed=N always identifies the same first GR00T flow latent.
+        _seed_everything(self.seed)
         self.adapter = GR00TPolicyDecoratorAdapter(
             self.model,
             learner_device=self.learner_device,
@@ -109,6 +112,9 @@ class PolicyDecoratorExperiment:
             total_num_processes=1,
             worker_info=None,
         )
+        # Environment construction may initialize libraries that touch the host
+        # RNGs. No stochastic policy call is allowed before this final reseed.
+        _seed_everything(self.seed)
 
         self.learner: PolicyDecoratorSAC | None = None
         self.replay: DecoratorReplayBuffer | None = None
@@ -117,6 +123,7 @@ class PolicyDecoratorExperiment:
         self.completed_episodes = 0
         self.successful_episodes = 0
         self.nonfinite_count = 0
+        self.zero_identity_checks = 0
         self.failure_reason: str | None = None
         self.episode_returns = torch.zeros(self.num_envs, dtype=torch.float32)
         self.episode_lengths = torch.zeros(self.num_envs, dtype=torch.long)
@@ -204,30 +211,43 @@ class PolicyDecoratorExperiment:
                 unit_residual * float(self.pd_cfg.random_residual_std)
             ).clamp(-1.0, 1.0)
             active_ratio = 1.0
-        else:
+        elif self.mode == "eval":
             policy = self.learner.act(
                 context,
                 base_action,
-                deterministic=self.mode == "eval",
+                deterministic=True,
             )
             unit_residual = policy.action
-            if self.mode == "train":
-                schedule = ProgressiveResidualSchedule(
-                    int(self.pd_cfg.progressive_exploration_steps)
-                )
-                mask = schedule.mask(
-                    step=self.decision_step,
-                    batch_size=base_action.shape[0],
-                    device=self.learner_device,
-                )
-                unit_residual = torch.where(
-                    mask,
-                    unit_residual,
-                    torch.zeros_like(unit_residual),
-                )
-                active_ratio = float(mask.float().mean())
+            active_ratio = 1.0
+        else:
+            assert self.replay is not None
+            if len(self.replay) < int(self.pd_cfg.learning_starts):
+                # Match upstream Policy Decorator: populate early replay with
+                # uniform residual actions, not samples from an untrained actor.
+                unit_residual = torch.empty_like(base_action).uniform_(-1.0, 1.0)
+                prelearning_uniform = 1.0
             else:
-                active_ratio = 1.0
+                policy = self.learner.act(
+                    context,
+                    base_action,
+                    deterministic=False,
+                )
+                unit_residual = policy.action
+                prelearning_uniform = 0.0
+            schedule = ProgressiveResidualSchedule(
+                int(self.pd_cfg.progressive_exploration_steps)
+            )
+            mask = schedule.mask(
+                step=self.decision_step,
+                batch_size=base_action.shape[0],
+                device=self.learner_device,
+            )
+            unit_residual = torch.where(
+                mask,
+                unit_residual,
+                torch.zeros_like(unit_residual),
+            )
+            active_ratio = float(mask.float().mean())
 
         scaled = float(self.pd_cfg.residual_scale) * unit_residual
         step_l2 = torch.linalg.vector_norm(scaled.float(), dim=-1)
@@ -239,6 +259,9 @@ class PolicyDecoratorExperiment:
                 (unit_residual.abs() > 0.95).float().mean()
             ),
             "residual/active_env_fraction": active_ratio,
+            "residual/prelearning_uniform": (
+                prelearning_uniform if self.mode == "train" else 0.0
+            ),
         }
         return unit_residual, metrics
 
@@ -394,13 +417,21 @@ class PolicyDecoratorExperiment:
             "successful_episodes": self.successful_episodes,
             "success_rate": success_rate,
             "nonfinite_count": self.nonfinite_count,
+            "zero_identity_checks": self.zero_identity_checks,
             "failure_reason": self.failure_reason,
             "metrics_path": str(self.metrics_path),
         }
         if self.mode == "zero_smoke":
+            minimum_success_rate = self.pd_cfg.get("zero_smoke_min_success_rate", None)
+            success_gate_passed = minimum_success_rate is None or success_rate >= float(
+                minimum_success_rate
+            )
+            summary["success_rate_gate_enabled"] = minimum_success_rate is not None
+            summary["success_rate_gate_passed"] = success_gate_passed
             summary["passed"] = (
                 self.completed_episodes >= int(self.pd_cfg.zero_smoke_episodes)
-                and success_rate >= float(self.pd_cfg.zero_smoke_min_success_rate)
+                and self.zero_identity_checks > 0
+                and success_gate_passed
                 and self.nonfinite_count == 0
                 and self.failure_reason is None
             )
@@ -461,6 +492,8 @@ class PolicyDecoratorExperiment:
                         "zero_smoke must reproduce the normalized GR00T base action "
                         "bit-for-bit"
                     )
+                if self.mode == "zero_smoke":
+                    self.zero_identity_checks += int(executed.shape[0])
                 raw_action = self.adapter.decode(proposal, executed)
                 env_action = prepare_actions(
                     raw_chunk_actions=raw_action,

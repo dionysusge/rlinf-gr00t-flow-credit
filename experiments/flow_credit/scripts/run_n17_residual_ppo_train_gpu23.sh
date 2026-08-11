@@ -7,6 +7,24 @@ RLINF="$PROJECT/RLinf"
 CONFIG_NAME=libero_spatial_residual_ppo_gr00t_n1d7_h200_gpu23
 
 source "$PROJECT/scripts/activate_rlinf.sh"
+
+BASE_MODEL_PATH="${PPO_MODEL_PATH:-$PROJECT/models/GR00T-N1.7-LIBERO/libero_spatial}"
+if [[ ! -d "$BASE_MODEL_PATH" ]]; then
+    echo "GR00T checkpoint directory not found: $BASE_MODEL_PATH" >&2
+    exit 2
+fi
+if [[ -n "${PPO_BACKBONE_MODEL_PATH:-}" ]]; then
+    BACKBONE_MODEL_PATH="$PPO_BACKBONE_MODEL_PATH"
+elif [[ -d "$PROJECT/models/Cosmos-Reason2-2B" ]]; then
+    BACKBONE_MODEL_PATH="$PROJECT/models/Cosmos-Reason2-2B"
+elif [[ -d /data/Wayne/gzw/gr00t_n1_7/models/Cosmos-Reason2-2B ]]; then
+    BACKBONE_MODEL_PATH=/data/Wayne/gzw/gr00t_n1_7/models/Cosmos-Reason2-2B
+else
+    echo "Cosmos-Reason2-2B was not found in either known server location." >&2
+    exit 2
+fi
+export BASE_MODEL_PATH BACKBONE_MODEL_PATH
+
 export EMBODIED_PATH="$RLINF/examples/embodiment"
 export REPO_PATH="$RLINF"
 export ROBOT_PLATFORM=LIBERO
@@ -83,6 +101,10 @@ python "$EMBODIED_PATH/train_embodied_agent.py" \
     --resolve \
     runner.logger.log_path="$RUN_DIR" \
     runner.logger.experiment_name="$RUN_NAME" \
+    actor.model.model_path="$BASE_MODEL_PATH" \
+    rollout.model.model_path="$BASE_MODEL_PATH" \
+    actor.model.backbone_model_path="$BACKBONE_MODEL_PATH" \
+    rollout.model.backbone_model_path="$BACKBONE_MODEL_PATH" \
     > "$RUN_DIR/resolved_config.yaml"
 
 python - "$RUN_DIR/run_manifest.json" "$RLINF" "$CONFIG_NAME" <<'PY'
@@ -129,7 +151,8 @@ manifest = {
         ]
     ),
     "config_name": config_name,
-    "gr00t_checkpoint_path": "/data/Wayne/gzw/rlinf_gr00t_n17/models/GR00T-N1.7-LIBERO/libero_spatial",
+    "gr00t_checkpoint_path": os.environ["BASE_MODEL_PATH"],
+    "cosmos_backbone_path": os.environ["BACKBONE_MODEL_PATH"],
     "actor_seed": 1234,
     "rollout_seed": 1234,
     "env_seed": 0,
@@ -142,7 +165,11 @@ manifest = {
         "python examples/embodiment/train_embodied_agent.py "
         f"--config-name {config_name} "
         f"runner.logger.log_path={os.environ.get('RUN_DIR')} "
-        f"runner.logger.experiment_name={os.environ.get('RUN_NAME')}"
+        f"runner.logger.experiment_name={os.environ.get('RUN_NAME')} "
+        f"actor.model.model_path={os.environ['BASE_MODEL_PATH']} "
+        f"rollout.model.model_path={os.environ['BASE_MODEL_PATH']} "
+        f"actor.model.backbone_model_path={os.environ['BACKBONE_MODEL_PATH']} "
+        f"rollout.model.backbone_model_path={os.environ['BACKBONE_MODEL_PATH']}"
     ),
 }
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -153,6 +180,8 @@ echo "Residual PPO E1"
 echo "run:                 $RUN_NAME"
 echo "GPUs:                2,3"
 echo "base GR00T:          frozen"
+echo "GR00T checkpoint:    $BASE_MODEL_PATH"
+echo "Cosmos backbone:     $BACKBONE_MODEL_PATH"
 echo "residual bound:      0.1"
 echo "actor/critic LR:     1e-4 / 1e-4"
 echo "transitions/update:  4096"
@@ -173,6 +202,10 @@ python "$EMBODIED_PATH/train_embodied_agent.py" \
     --config-name "$CONFIG_NAME" \
     runner.logger.log_path="$RUN_DIR" \
     runner.logger.experiment_name="$RUN_NAME" \
+    actor.model.model_path="$BASE_MODEL_PATH" \
+    rollout.model.model_path="$BASE_MODEL_PATH" \
+    actor.model.backbone_model_path="$BACKBONE_MODEL_PATH" \
+    rollout.model.backbone_model_path="$BACKBONE_MODEL_PATH" \
     2>&1 | tee "$RUN_DIR/training.log"
 
 E0_STATUS_AT_TRAINING_END=pending

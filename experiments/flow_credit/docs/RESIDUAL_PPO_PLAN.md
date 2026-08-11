@@ -102,6 +102,13 @@ tmux new -s residual-e1
 bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu23.sh
 ```
 
+The launcher validates the GR00T checkpoint and resolves the Cosmos backbone
+from the two known server locations before Ray starts. Override them with
+`PPO_MODEL_PATH` and `PPO_BACKBONE_MODEL_PATH` when moving the experiment.
+LIBERO chunk rewards are masked after each environment's first done, so PPO
+advantages never include post-terminal actions from the remainder of a 16-step
+open-loop chunk.
+
 One update contains 4096 environment transitions. The 150-step run saves and
 evaluates checkpoints near 123K, 246K, 369K, 492K and 614K transitions (steps
 30, 60, 90, 120 and 150). W&B/TensorBoard
