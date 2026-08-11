@@ -180,7 +180,8 @@ try:
         and {row["model"] for row in rows} == {expected_label}
         and payload["label"] == expected_label
         and payload["expected_trajectories"] == 100
-        and payload["metrics"]["num_trajectories"] == 100
+        and payload["num_trial_records"] == 100
+        and payload["num_unique_trials"] == 100
         and payload["eval_reset_offset"] == expected_offset
         and payload["eval_reset_limit"] == 100
     )

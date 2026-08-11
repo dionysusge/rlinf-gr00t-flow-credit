@@ -126,6 +126,20 @@ def write_trial_records(output_dir, records):
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def validate_fixed_trial_records(records, *, expected):
+    """Require complete, unique coverage of the configured fixed-reset slice."""
+    actual = len(records)
+    if actual != expected:
+        raise RuntimeError(f"Expected {expected} unique fixed trials, got {actual}")
+
+    unique_trials = {(record["task_id"], record["trial_id"]) for record in records}
+    if len(unique_trials) != expected:
+        raise RuntimeError(
+            f"Expected {expected} unique (task_id, trial_id) pairs, "
+            f"got {len(unique_trials)}"
+        )
+
+
 @hydra.main(
     version_base="1.1",
     config_path="config",
@@ -199,22 +213,32 @@ def main(cfg) -> None:
         metrics, metric_shards = runner.evaluate(return_metric_shards=True)
         metrics = {key: to_jsonable(value) for key, value in metrics.items()}
 
-        payload = {
-            "label": label,
-            "resume_dir": cfg.runner.resume_dir,
-            "expected_trajectories": int(cfg.env.eval.total_num_envs),
-            "eval_reset_offset": int(cfg.env.eval.get("eval_reset_offset", 0)),
-            "eval_reset_limit": int(cfg.env.eval.get("eval_reset_limit", 0)),
-            "metrics": metrics,
-        }
-
         checkpoint = cfg.runner.resume_dir or "sft_base"
         trial_records = build_trial_records(
             metric_shards,
             label=label,
             checkpoint=checkpoint,
         )
+        expected = int(
+            cfg.env.eval.get(
+                "eval_reset_limit",
+                cfg.env.eval.total_num_envs,
+            )
+        )
         write_trial_records(output_dir, trial_records)
+
+        payload = {
+            "label": label,
+            "resume_dir": cfg.runner.resume_dir,
+            "expected_trajectories": expected,
+            "num_trial_records": len(trial_records),
+            "num_unique_trials": len(
+                {(row["task_id"], row["trial_id"]) for row in trial_records}
+            ),
+            "eval_reset_offset": int(cfg.env.eval.get("eval_reset_offset", 0)),
+            "eval_reset_limit": int(cfg.env.eval.get("eval_reset_limit", 0)),
+            "metrics": metrics,
+        }
 
         metrics_path = output_dir / "metrics.json"
 
@@ -231,11 +255,7 @@ def main(cfg) -> None:
         print("===== fixed evaluation result =====")
         print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-        actual = int(metrics.get("num_trajectories", -1))
-        expected = int(cfg.env.eval.total_num_envs)
-
-        if actual != expected:
-            raise RuntimeError(f"Expected {expected} trajectories, got {actual}")
+        validate_fixed_trial_records(trial_records, expected=expected)
 
         print()
         print("FIXED100_EVAL_COMPLETE")

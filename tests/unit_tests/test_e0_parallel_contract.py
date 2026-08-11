@@ -45,6 +45,26 @@ def test_e0_uses_non_overlapping_slices_and_bounded_retries() -> None:
     assert "n17_residual_e0.lock" in script
 
 
+def test_e0_fixed100_cycles_twenty_envs_over_five_epochs() -> None:
+    config = CONFIG.read_text(encoding="utf-8")
+
+    eval_config = config.split("  eval:\n", maxsplit=1)[1].split(
+        "\nrollout:", maxsplit=1
+    )[0]
+    assert "total_num_envs: 20" in eval_config
+    assert "auto_reset: true" in eval_config
+    assert "rollout_epoch: 5" in eval_config
+
+
+def test_fixed_evaluator_validates_unique_reset_slice_records() -> None:
+    source = EVALUATOR.read_text(encoding="utf-8")
+
+    assert 'cfg.env.eval.get(\n                "eval_reset_limit"' in source
+    assert "validate_fixed_trial_records(trial_records, expected=expected)" in source
+    assert 'unique_trials = {(record["task_id"], record["trial_id"])' in source
+    assert 'actual = int(metrics.get("num_trajectories", -1))' not in source
+
+
 def test_fixed_evaluator_orders_worker_cleanup_before_ray_shutdown() -> None:
     source = EVALUATOR.read_text(encoding="utf-8")
 
