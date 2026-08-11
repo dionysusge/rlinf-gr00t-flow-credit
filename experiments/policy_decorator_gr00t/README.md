@@ -63,7 +63,7 @@ bash experiments/policy_decorator_gr00t/run.sh all
 
 ## W&B 与本地证据
 
-W&B project 为 `GR00T-Policy-Decorator`，三个阶段分别创建 run。主要指标包括：
+W&B 继续写入原实验使用的 project `GR00T-Residual-RL`，只通过 `PD-${mode}-GR00T-N1.7-LIBERO-Spatial` 区分三个新 run。主要指标包括：
 
 - `env/success_rate_total`、`env/success_rate_window`
 - `env/episode_return_window`、`env/episode_length_window`
