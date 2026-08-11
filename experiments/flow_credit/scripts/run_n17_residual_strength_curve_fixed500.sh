@@ -48,7 +48,7 @@ git -C "$RLINF" status --short > "$ROOT/git_status.txt"
 
 declare -a LAMBDAS=(0 0.25 0.5 1.0)
 declare -a SET_NAMES=(setA setB setC setD setE)
-declare -a OFFSETS=(0 10 20 30 40)
+declare -a OFFSETS=(0 100 200 300 400)
 cd "$RLINF"
 
 for lambda in "${LAMBDAS[@]}"; do

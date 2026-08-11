@@ -31,6 +31,10 @@ gripper conversion), plus per-trial timing, early/middle/late temporal proxies
 and per-task views. It
 also records Set-A repeatability, a pre-registered Set-A selection rule, B--E
 held-out results and a paired Full-PPO step600 reference.
+The E0 gate uses a direct no-Ray evaluator on one GPU with ten local LIBERO
+environments. Its five 100-trial slices use offsets 0/100/200/300/400, so the
+aggregate contains 500 unique task/trial pairs. Completed sets are validated and
+can be reused with `E0_RESUME_ROOT` after an interrupted run.
 Training curves and every evaluation stage are synchronized to the
 `GR00T-Residual-RL` W&B project. Compact CSV/JSON/YAML evidence is uploaded as
 an artifact and the key trial files are exposed as W&B Tables; raw diagnostic

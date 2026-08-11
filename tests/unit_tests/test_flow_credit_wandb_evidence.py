@@ -133,6 +133,29 @@ def test_e0_event_flattens_all_evidence_groups(tmp_path: Path) -> None:
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "aggregate" / "per_set_summary.csv").write_text(
+        "set,successes,num_trials,success_rate,reward,episode_length\n"
+        "setA,90,100,0.9,0.1,120.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "base" / "aggregate" / "per_set_summary.csv").write_text(
+        "set,successes,num_trials,success_rate,reward,episode_length\n"
+        "setA,89,100,0.89,0.09,121.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "setA").mkdir()
+    (tmp_path / "setA" / "metrics.json").write_text(
+        json.dumps(
+            {
+                "metrics": {
+                    "success_rate": 0.9,
+                    "runtime": "direct_no_ray",
+                    "ray_initialized": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     events, step_metric = MODULE.collect_events("e0", tmp_path)
 
@@ -143,6 +166,14 @@ def test_e0_event_flattens_all_evidence_groups(tmp_path: Path) -> None:
     assert events[0]["e0/base_zero_pairing/rescue"] == 0
     assert events[0]["e0/repeatability/repeatable"] is True
     assert events[0]["e0/historical_reference/historical_unseeded_successes"] == 444
+    assert events[0]["e0/zero/setA/success_rate"] == 0.9
+    assert events[0]["e0/base/setA/successes"] == 89
+    assert events[0]["e0/zero/setA/direct/runtime"] == "direct_no_ray"
+    assert events[0]["e0/zero/setA/direct/ray_initialized"] is False
+
+    tables = dict(MODULE.table_paths("e0", tmp_path))
+    assert "aggregate_per_set_summary" in tables
+    assert "base_aggregate_per_set_summary" in tables
 
 
 def test_main_logs_metrics_tables_and_artifact(

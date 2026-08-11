@@ -50,7 +50,7 @@ git -C "$RLINF" rev-parse HEAD > "$ROOT/git_commit.txt"
 git -C "$RLINF" status --short > "$ROOT/git_status.txt"
 
 declare -a SET_NAMES=(setA setB setC setD setE)
-declare -a OFFSETS=(0 10 20 30 40)
+declare -a OFFSETS=(0 100 200 300 400)
 inputs=()
 heldout_inputs=()
 cd "$RLINF"

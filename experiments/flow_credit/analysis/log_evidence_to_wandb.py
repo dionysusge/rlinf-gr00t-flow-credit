@@ -101,6 +101,30 @@ def collect_events(kind: str, root: Path) -> tuple[list[dict[str, object]], str 
             path = root / relative
             if path.is_file():
                 event.update(flatten_json(read_json(path), prefix=prefix))
+        for variant, relative in (
+            ("zero", "aggregate/per_set_summary.csv"),
+            ("base", "base/aggregate/per_set_summary.csv"),
+        ):
+            path = root / relative
+            if not path.is_file():
+                continue
+            for row in read_csv(path):
+                set_name = str(row["set"])
+                for key, value in row.items():
+                    if key != "set":
+                        event[f"e0/{variant}/{set_name}/{key}"] = value
+        for variant, relative_root in (("zero", Path()), ("base", Path("base"))):
+            for set_name in ("setA", "setB", "setC", "setD", "setE"):
+                path = root / relative_root / set_name / "metrics.json"
+                if not path.is_file():
+                    continue
+                payload = read_json(path)
+                event.update(
+                    flatten_json(
+                        payload.get("metrics", {}),
+                        prefix=f"e0/{variant}/{set_name}/direct",
+                    )
+                )
         return [event], None
 
     if kind == "checkpoint_sweep":
@@ -164,7 +188,9 @@ def table_paths(kind: str, root: Path) -> list[tuple[str, Path]]:
         "training": (),
         "e0": (
             "aggregate/trials.csv",
+            "aggregate/per_set_summary.csv",
             "base/aggregate/trials.csv",
+            "base/aggregate/per_set_summary.csv",
             "base_zero_pairing/pairing.csv",
             "base_zero_pairing/per_task.csv",
             "base_zero_pairing_heldout_BtoE/pairing.csv",

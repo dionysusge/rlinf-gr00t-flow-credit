@@ -26,7 +26,7 @@ The first round answers only:
 - Historical unseeded base reference: GR00T N1.7 LIBERO-Spatial SFT
   (444/500, 88.8%); the seeded E0 run establishes the new paired base.
 - Full PPO reference: global step 600 (458/500, 91.6%).
-- Hardware lanes: seeded evaluation jobs use physical H200 GPUs 4 and 5;
+- Hardware lanes: the seeded E0 evaluator uses physical H200 GPU 4 only;
   Residual PPO training uses physical H200 GPUs 2 and 3.
 - Action horizon: 16; flow steps: 4.
 - Residual: normalized-action bound 0.1, two-layer 512-width MLP,
@@ -47,18 +47,18 @@ action noise is disabled.
 ```bash
 cd /data/Wayne/gzw/rlinf_gr00t_n17/RLinf
 git fetch origin
-git switch exp/residual-ppo-e0-e1
+git switch exp/policy-decorator-gr00t
 git pull --ff-only
 source /data/Wayne/gzw/rlinf_gr00t_n17/scripts/activate_rlinf.sh
 ```
 
-Run long jobs inside `tmux`. Check GPU 2/3 and GPU 4/5 occupancy before
-launching.
-Every script validates its short `RAY_TMPDIR` before loading the model. The
-fixed-evaluation entry shuts down its own local Ray runtime; the scripts do not
-use the account-wide `ray stop --force` command. The experiment scripts also
-set `RLINF_FORCE_LOCAL_RAY=1`, preventing concurrent jobs owned by the same
-Unix user from discovering and attaching to each other's Ray cluster.
+Run long jobs inside `tmux` and do not launch E0 concurrently with E1. E0 now
+uses a direct single-process GR00T evaluator: it does not initialize Ray, FSDP,
+Gloo, actor workers or rollout workers. Ten local LIBERO subprocesses cover each
+100-trial set in ordered waves. It does not stop account-wide Ray processes by
+default, so unrelated jobs such as GPU 7 are left alone. Set
+`E0_CLEAN_STALE_RAY=1` only when explicitly intending to stop all same-user Ray
+processes before E0.
 
 ## E0: seeded zero-residual equivalence check
 
@@ -69,8 +69,10 @@ bash experiments/flow_credit/scripts/run_n17_residual_e0_fixed500.sh
 
 Flow inference samples an initial Gaussian latent even when language/token
 sampling is disabled. `env.eval.seed` controls fixed LIBERO reset states;
-`rollout.seed=1234` separately controls that model-side RNG (with a rank
-offset). The script evaluates both residual-disabled and `force_zero=true`
+`model_seed=1234` separately controls the single-process model-side RNG. The
+seed is reset after model loading for each set. The five non-overlapping slices
+start at offsets 0, 100, 200, 300 and
+400. The script evaluates both residual-disabled and `force_zero=true`
 policies on all five 100-trial sets, then creates `E0_PASS` only if all 500
 paired success outcomes match exactly (`rescue=0`, `harm=0`).
 
@@ -81,16 +83,19 @@ repeat them. The historical unseeded 444/500 result remains in
 `historical_reference.json`; it is a reference, not an exact gate for the new
 seeded inference stream. Do not launch E1 if E0 fails.
 
-E0 runs on GPUs 4 and 5. E1 may be launched concurrently on GPUs 2 and 3 with
-the explicit provisional override below. If E0 eventually fails, discard the
-concurrent E1 run rather than using it as validated evidence.
+The E0 W&B run is registered at startup and keeps the same stable run ID. Each
+completed set appends its direct success, reward, episode-length, runtime and
+fixed-slice metadata to that run; final aggregate, pairing, repeatability,
+Tables and compact evidence artifacts are uploaded to the same run.
+
+E0 runs on GPU 4 only. Wait for `E0_PASS` before launching E1; concurrent E0/E1
+runs are no longer part of the supported experiment procedure.
 
 ## E1: Residual-PPO-0.1
 
 ```bash
 tmux new -s residual-e1
-ALLOW_UNVERIFIED_E0=1 \
-  bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu23.sh
+bash experiments/flow_credit/scripts/run_n17_residual_ppo_train_gpu23.sh
 ```
 
 One update contains 4096 environment transitions. The 150-step run saves and
