@@ -78,7 +78,7 @@ env:
       video_base_dir: ${runner.logger.log_path}/video/eval
 
 policy_decorator:
-  # CUDA_VISIBLE_DEVICES=2,3 maps physical GPU 2 -> cuda:0 and GPU 3 -> cuda:1.
+  # CUDA_VISIBLE_DEVICES=0,1 maps physical GPU 0 -> cuda:0 and GPU 1 -> cuda:1.
   model_device: cuda:0
   learner_device: cuda:1
   seed: 1234

@@ -22,7 +22,7 @@ source "${ACTIVATE_SCRIPT}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
 
-export CUDA_VISIBLE_DEVICES="${PD_GPUS:-2,3}"
+export CUDA_VISIBLE_DEVICES="${PD_GPUS:-0,1}"
 export EMBODIED_PATH="${EMBODIED_PATH:-${REPO_ROOT}/examples/embodiment}"
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
 export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"

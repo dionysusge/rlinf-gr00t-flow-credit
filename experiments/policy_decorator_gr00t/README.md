@@ -39,7 +39,7 @@ bash experiments/policy_decorator_gr00t/run.sh all
 
 脚本会自动加载 `/data/Wayne/gzw/rlinf_gr00t_n17/scripts/activate_rlinf.sh`，并在启动前检查 GR00T checkpoint 与 Cosmos backbone。Cosmos 会在两个已知服务器目录间自动选择，也可用 `PD_BACKBONE_MODEL_PATH` 显式覆盖。
 
-脚本默认设置 `CUDA_VISIBLE_DEVICES=2,3`：进程内 `cuda:0` 是物理 GPU 2，加载冻结 GR00T；进程内 `cuda:1` 是物理 GPU 3，放 residual actor、twin-Q 与 optimizer。该入口不初始化 Ray，不连接现存 Ray cluster，也没有 FSDP 和 weight sync。
+脚本默认设置 `CUDA_VISIBLE_DEVICES=0,1`：进程内 `cuda:0` 是物理 GPU 0，加载冻结 GR00T；进程内 `cuda:1` 是物理 GPU 1，放 residual actor、twin-Q 与 optimizer。该入口不初始化 Ray，不连接现存 Ray cluster，也没有 FSDP 和 weight sync。
 
 ## 三个阶段的硬门槛
 

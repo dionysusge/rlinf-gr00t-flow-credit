@@ -71,7 +71,7 @@ fi
 mkdir -p "$RAY_TMPDIR" "$BULK/runs" "$BULK/logs" "$BULK/wandb"
 python "$RLINF/experiments/flow_credit/analysis/validate_ray_tmpdir.py" "$RAY_TMPDIR"
 STAMP=$(date +%Y%m%d_%H%M%S)
-RUN_ID="n17_residual_ppo_a01_gpu23_${STAMP}"
+RUN_ID="n17_residual_ppo_a01_gpu01_${STAMP}"
 RUN_NAME="Residual-PPO-0.1-GR00T-N1.7-LIBERO-Spatial-H200x2-${STAMP}"
 RUN_DIR="$BULK/runs/$RUN_ID"
 export RUN_ID RUN_NAME RUN_DIR E0_ROOT ALLOW_UNVERIFIED_E0 E0_VERIFIED_AT_LAUNCH
@@ -151,6 +151,7 @@ manifest = {
         ]
     ),
     "config_name": config_name,
+    "selected_gpu_indices": [0, 1],
     "gr00t_checkpoint_path": os.environ["BASE_MODEL_PATH"],
     "cosmos_backbone_path": os.environ["BACKBONE_MODEL_PATH"],
     "actor_seed": 1234,
@@ -178,7 +179,7 @@ PY
 echo "============================================================"
 echo "Residual PPO E1"
 echo "run:                 $RUN_NAME"
-echo "GPUs:                2,3"
+echo "GPUs:                0,1"
 echo "base GR00T:          frozen"
 echo "GR00T checkpoint:    $BASE_MODEL_PATH"
 echo "Cosmos backbone:     $BACKBONE_MODEL_PATH"

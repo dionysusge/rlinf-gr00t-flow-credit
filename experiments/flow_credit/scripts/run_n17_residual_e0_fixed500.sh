@@ -21,7 +21,7 @@ if [[ "${E0_LOCK_HELD:-0}" != "1" ]]; then
     rc=$?
     set -e
     if [[ "$rc" -eq 73 ]]; then
-        echo "Another E0 launcher is already using GPUs 4/5" >&2
+        echo "Another E0 launcher is already using GPUs 0/1" >&2
     fi
     exit "$rc"
 fi
@@ -80,6 +80,11 @@ fi
 echo "$EVAL_ROOT" > "$BULK/logs/n17_residual_e0.latest"
 git -C "$RLINF" rev-parse HEAD > "$EVAL_ROOT/git_commit.txt"
 git -C "$RLINF" status --short > "$EVAL_ROOT/git_status.txt"
+if [[ -f "$EVAL_ROOT/e0_manifest.json" \
+    && ! -f "$EVAL_ROOT/e0_manifest.before_gpu01_resume.json" ]]; then
+    cp "$EVAL_ROOT/e0_manifest.json" \
+        "$EVAL_ROOT/e0_manifest.before_gpu01_resume.json"
+fi
 python - "$EVAL_ROOT/e0_manifest.json" <<'PY'
 import json
 import sys
@@ -88,7 +93,7 @@ from pathlib import Path
 Path(sys.argv[1]).write_text(
     json.dumps(
         {
-            "gpus": [4, 5],
+            "gpus": [0, 1],
             "runtime": "ray_fsdp_parallel",
             "parallel_actor_workers": 2,
             "parallel_rollout_workers": 2,
@@ -114,6 +119,47 @@ Path(sys.argv[1]).write_text(
     + "\n",
     encoding="utf-8",
 )
+PY
+
+python - "$EVAL_ROOT/e0_launch_history.jsonl" "$EVAL_ROOT" "$RLINF" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+history_path = Path(sys.argv[1])
+root = Path(sys.argv[2])
+repo = Path(sys.argv[3])
+completed_before_launch = []
+for exit_code_path in sorted(root.rglob("exit_code.txt")):
+    try:
+        if exit_code_path.read_text(encoding="utf-8").strip() == "0":
+            completed_before_launch.append(str(exit_code_path.parent.relative_to(root)))
+    except OSError:
+        continue
+
+try:
+    git_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=repo,
+    ).stdout.strip()
+except (OSError, subprocess.CalledProcessError) as error:
+    git_commit = f"unavailable: {error}"
+
+entry = {
+    "started_at": datetime.now().astimezone().isoformat(),
+    "gpus": [0, 1],
+    "resume_root": os.environ.get("E0_RESUME_ROOT"),
+    "git_commit": git_commit,
+    "completed_sets_before_launch": completed_before_launch,
+}
+with history_path.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 PY
 
 declare -a SET_NAMES=(setA setB setC setD setE)

@@ -30,9 +30,9 @@ def test_e0_keeps_two_gpu_ray_parallelism() -> None:
     assert "CONFIG_NAME=libero_spatial_n17_residual_fixed_eval_gpu45" in script
     assert "eval_embodied_agent_fixed.py" in script
     assert "RLINF_FORCE_LOCAL_RAY=1" in script
-    assert "actor: 4-5" in config
-    assert "rollout: 4-5" in config
-    assert "env: 4-5" in config
+    assert "actor: 0-1" in config
+    assert "rollout: 0-1" in config
+    assert "env: 0-1" in config
 
 
 def test_e0_uses_non_overlapping_slices_and_bounded_retries() -> None:
