@@ -1319,6 +1319,154 @@ class GR00T_N1_7_ForRLActionPrediction(Gr00tN1d7, BasePolicy):
             )
         return normalized_action, result
 
+    @torch.no_grad()
+    def get_policy_decorator_proposal(
+        self,
+        env_obs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Extract a frozen GR00T proposal for a standalone decorator.
+
+        This is a read-only bridge: it does not construct, register, or train a
+        residual submodule inside GR00T. The returned context is the concatenated
+        mean-pooled VLM embedding and encoded proprioceptive state. The base
+        action remains in GR00T normalized action space.
+
+        Args:
+            env_obs: Batched observation produced by an RLinf environment.
+
+        Returns:
+            Context, the 16x7 base chunk, the full normalized action template,
+            and metadata needed to run the existing GR00T action decoder.
+        """
+        if self.residual_policy_enabled:
+            raise RuntimeError(
+                "Standalone Policy Decorator requires residual_policy.enabled=false "
+                "so no residual parameters live inside GR00T"
+            )
+
+        observations, obs_copy, is_batch = self._prepare_rollout_observation(env_obs)
+        normalized_input = self.apply_transforms(obs_copy)
+        normalized_input = self._cast_float_tensors_to_compute_dtype(
+            normalized_input,
+            self.compute_dtype,
+        )
+        normalized_input = _canonicalize_gr00t_text_forward_inputs(
+            normalized_input,
+            getattr(self, "padding_value", 0),
+        )
+
+        # The official action API does not expose its internal embeddings. The
+        # conservative first integration therefore performs one action pass and
+        # one feature-only backbone pass. This keeps the base action bit-for-bit
+        # on the existing inference path and avoids forking GR00T flow logic.
+        base_action_full = self._get_action_from_normalized_input(normalized_input)
+        normalized_input = _normalize_gr00t_forward_inputs(normalized_input)
+        backbone_inputs, action_inputs = self.prepare_input(normalized_input)
+        device_type = getattr(self.device, "type", "cpu")
+        autocast_context = (
+            torch.autocast(device_type=device_type, dtype=self.compute_dtype)
+            if device_type == "cuda"
+            else nullcontext()
+        )
+        with autocast_context:
+            backbone_outputs = self.backbone(backbone_inputs)
+            if hasattr(backbone_outputs, "backbone_features"):
+                backbone_outputs = self.action_head._process_backbone_output(
+                    backbone_outputs
+                )
+                vlm_features = backbone_outputs.backbone_features
+            else:
+                vlm_features = backbone_outputs
+            embodiment_id = (
+                action_inputs.embodiment_id
+                if hasattr(action_inputs, "embodiment_id")
+                else 0
+            )
+            state_features = self.action_head._encode_state_features(
+                action_inputs,
+                embodiment_id,
+            )
+
+        horizon = int(self.output_action_chunks)
+        action_dim = int(self.action_dim)
+        if base_action_full.ndim != 3:
+            raise ValueError(
+                "GR00T base action must be [batch,horizon,dim], got "
+                f"{tuple(base_action_full.shape)}"
+            )
+        if base_action_full.shape[1] < horizon or base_action_full.shape[2] < action_dim:
+            raise ValueError(
+                f"GR00T base action {tuple(base_action_full.shape)} cannot provide "
+                f"the requested ({horizon}, {action_dim}) chunk"
+            )
+
+        context = torch.cat(
+            (
+                vlm_features.float().mean(dim=1),
+                state_features.float().flatten(start_dim=1),
+            ),
+            dim=-1,
+        )
+        base_action = base_action_full[:, :horizon, :action_dim].float()
+        for name, value in {
+            "context": context,
+            "base_action": base_action,
+            "base_action_full": base_action_full,
+        }.items():
+            if not torch.isfinite(value).all():
+                raise FloatingPointError(
+                    f"Non-finite GR00T Policy Decorator proposal field: {name}"
+                )
+
+        return {
+            "context": context.detach(),
+            "base_action": base_action.detach(),
+            "base_action_full": base_action_full.detach(),
+            "observations": observations,
+            "is_batch": is_batch,
+        }
+
+    @torch.no_grad()
+    def decode_policy_decorator_action(
+        self,
+        proposal: dict[str, Any],
+        executed_normalized_action: torch.Tensor,
+    ) -> np.ndarray | torch.Tensor:
+        """Decode a decorated normalized chunk with the existing GR00T path."""
+        base_action_full = proposal["base_action_full"]
+        horizon = int(self.output_action_chunks)
+        action_dim = int(self.action_dim)
+        expected_shape = (base_action_full.shape[0], horizon, action_dim)
+        if tuple(executed_normalized_action.shape) != expected_shape:
+            raise ValueError(
+                "Executed decorator action must have shape "
+                f"{expected_shape}, got {tuple(executed_normalized_action.shape)}"
+            )
+        if not torch.isfinite(executed_normalized_action).all():
+            raise FloatingPointError("Non-finite executed normalized action")
+
+        normalized_action = base_action_full.detach().clone()
+        normalized_action[:, :horizon, :action_dim] = (
+            executed_normalized_action.to(
+                device=normalized_action.device,
+                dtype=normalized_action.dtype,
+            )
+        )
+        unnormalized_action = self._get_unnormalized_action(
+            normalized_action,
+            state=proposal["observations"],
+        )
+        if not proposal["is_batch"]:
+            unnormalized_action = squeeze_dict_values(unnormalized_action)
+        raw_action = self.action_convert_fn(
+            unnormalized_action,
+            chunk_size=self.output_action_chunks,
+        )
+        raw_action_tensor = torch.as_tensor(raw_action).float()
+        if not torch.isfinite(raw_action_tensor).all():
+            raise FloatingPointError("Non-finite decoded Policy Decorator action")
+        return raw_action
+
     def _maybe_dump_flow_diagnostic(
         self,
         env_obs: dict[str, Any],
